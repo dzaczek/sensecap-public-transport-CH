@@ -64,8 +64,10 @@ typedef struct {
     const char *id;
 } station_t;
 
+/* (bus/tram) – ID z transport.opendata.ch/v1/locations?query=Aarau */
 static const station_t predefined_bus_stops[] = {
     {"Aarau, Gais", "8590142"},
+    {"Aarau Bahnhof", "8502996"},
     {"Aarau, Acheberstrasse", "8588428"}
 };
 
@@ -84,6 +86,7 @@ static lv_obj_t *train_view_cont = NULL;
 static lv_obj_t *loading_cont = NULL;
 
 
+/*  – ID z transport.opendata.ch */
 static const station_t predefined_stations[] = {
     {"Aarau", "8502113"},
     {"Zürich HB", "8503000"},
@@ -738,7 +741,8 @@ static void create_bus_screen(lv_obj_t *parent)
     lv_obj_set_style_pad_all(bus_selection_cont, 10, 0);
     lv_obj_set_flex_flow(bus_selection_cont, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_gap(bus_selection_cont, 10, 0);
-    
+    lv_obj_set_scrollbar_mode(bus_selection_cont, LV_SCROLLBAR_MODE_AUTO);
+
     lv_obj_t *sel_label = lv_label_create(bus_selection_cont);
     lv_label_set_text(sel_label, "Select stop:");
     lv_obj_set_style_text_font(sel_label, &arimo_20, 0);

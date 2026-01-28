@@ -22,14 +22,16 @@ This application fetches data from the [Open Transport Data Swiss API](https://t
 
 ## Configuration
 
-You must configure the station IDs for your location before compiling.
+### Managing stations and stops
 
-1. Open `main/model/transport_data.h`.
-2. Locate the **USER CONFIGURATION** section.
-3. Update the `BUS_STOP_NAME`, `BUS_STOP_ID`, and `SELECTED_BUS_LINES` definitions.
-4. Update the `TRAIN_STATION_NAME` and `TRAIN_STATION_ID`.
+The list of bus/tram stops and train stations available in the app is defined in **`main/view/indicator_view.c`**:
 
-> **Note:** You can find station IDs by querying the API: `http://transport.opendata.ch/v1/locations?query=YOUR_CITY`
+- **Bus/tram stops:** edit the `predefined_bus_stops[]` array — add or change entries as `{"Name", "ID"}`.
+- **Train stations:** edit the `predefined_stations[]` array the same way.
+
+Find stop and station IDs via the API: `http://transport.opendata.ch/v1/locations?query=CITY_NAME`
+
+Optionally, in **`main/model/transport_data.h`** (USER CONFIGURATION section) you can set default `BUS_STOP_*` / `TRAIN_STATION_*` and `SELECTED_BUS_LINES` (line filter, e.g. `"1,2,4"` or `"*"` for all).
 
 ## Build & Flash
 

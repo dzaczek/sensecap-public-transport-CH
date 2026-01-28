@@ -10,7 +10,9 @@ extern "C" {
 #endif
 
 #define MAX_DEPARTURES 10
-#define STATION_ID "8590142"  // Aarau, Gais (bus stop, not train station!)
+/* Legacy: ten moduł (indicator_transport.c) jest wyłączony z builda – używany jest transport_data.c.
+ * Lista przystanków/stacji jest w indicator_view.c: predefined_bus_stops, predefined_stations. */
+#define STATION_ID "8590142"  // fallback tylko gdyby ten moduł był w buildzie
 
 /**
  * @brief Single bus departure information
