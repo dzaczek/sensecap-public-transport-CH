@@ -1,0 +1,68 @@
+# SenseCAP Indicator - Public Transport Monitor
+
+A standalone ESP32-S3 project for the SenseCAP Indicator that displays real-time public transport departures (Bus & Train).
+
+This application fetches data from the [Open Transport Data Swiss API](https://transport.opendata.ch/) and displays it on the device's screen using LVGL.
+
+## Features
+
+- **Bus Countdown:** Shows minutes remaining until the next bus departures.
+- **Train Station Board:** Displays upcoming train departures, platforms, and delays.
+- **Smart Refresh:** 
+  - Updates every 5 minutes during the day (06:00 - 21:00).
+  - Updates every 15 minutes at night to save power.
+- **Morning Schedule:** Keeps the screen active during morning rush hour (06:15 - 07:15, Mon-Fri).
+- **WiFi Connectivity:** Connects to your local network to fetch API data.
+
+## Configuration
+
+You must configure the station IDs for your location before compiling.
+
+1. Open `main/model/transport_data.h`.
+2. Locate the **USER CONFIGURATION** section.
+3. Update the `BUS_STOP_NAME`, `BUS_STOP_ID`, and `SELECTED_BUS_LINES` definitions.
+4. Update the `TRAIN_STATION_NAME` and `TRAIN_STATION_ID`.
+
+> **Note:** You can find station IDs by querying the API: `http://transport.opendata.ch/v1/locations?query=YOUR_CITY`
+
+## Build & Flash
+
+This project is standalone and includes all necessary components.
+
+### Prerequisites
+
+- ESP-IDF v5.1.1 or later.
+- SenseCAP Indicator Board (ESP32-S3).
+
+### Building
+
+1. Navigate to the project directory:
+   ```bash
+   cd indicator_public_transport
+   ```
+
+2. Set the target to ESP32-S3:
+   ```bash
+   idf.py set-target esp32s3
+   ```
+
+3. Build the project:
+   ```bash
+   idf.py build
+   ```
+
+4. Flash and Monitor:
+   ```bash
+   idf.py -p /dev/tty.usbmodem123456 flash monitor
+   ```
+   *(Replace `/dev/tty...` with your actual serial port)*
+
+## Privacy & Security
+
+- This project does **not** contain any hardcoded WiFi credentials in the source code.
+- Credentials are managed via the device's UI (WiFi Config Screen) or `sdkconfig` (which is git-ignored).
+- The `sdkconfig` file containing local configuration is excluded from the repository.
+
+## License
+
+MIT License. See the LICENSE file for details.

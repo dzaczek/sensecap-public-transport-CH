@@ -1,0 +1,49 @@
+# ESP-IDF - Build Directory
+build/
+
+# ESP-IDF - Configuration
+# sdkconfig contains local configuration (like Wi-Fi credentials) and should be ignored.
+# sdkconfig.defaults is the template and SHOULD be committed.
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+
+# ESP-IDF - Components
+managed_components/
+dependencies.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.settings/
+.project
+.classpath
+
+# OS Specific
+.DS_Store
+.DS_Store?
+._*
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Compilation outputs (if built outside build dir)
+*.elf
+*.bin
+*.map
+*.hex
+*.uf2
+
+# Logs and databases
+*.log
+*.sqlite
+
+# Testing
+unity-app.xml
