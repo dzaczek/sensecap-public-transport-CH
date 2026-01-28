@@ -185,6 +185,8 @@ static int parse_departure_time(const char *time_str, time_t *departure_time)
 static bool is_selected_bus_line(const char *line)
 {
     const char *selected = SELECTED_BUS_LINES;
+    if (!selected || strlen(selected) == 0 || strcmp(selected, "*") == 0) return true;
+
     char line_copy[64];
     strncpy(line_copy, selected, sizeof(line_copy) - 1);
     
@@ -299,23 +301,28 @@ static esp_err_t parse_bus_json(const char *json_str)
         // Filter by category (B = Bus, T = Tram)
         cJSON *category = cJSON_GetObjectItem(departure, "category");
         const char *cat_str = category ? cJSON_GetStringValue(category) : "";
+        
+        // Get line number
+        cJSON *number = cJSON_GetObjectItem(departure, "number");
+        const char *line = number ? cJSON_GetStringValue(number) : "Unknown";
+
+        // Get destination for logging
+        cJSON *to = cJSON_GetObjectItem(departure, "to");
+        const char *destination = to ? cJSON_GetStringValue(to) : "Unknown";
+
+        ESP_LOGI(TAG, "Seen departure: Cat='%s', Line='%s', To='%s'", cat_str, line, destination);
+
         if (!category || (strcmp(cat_str, "B") != 0 && strcmp(cat_str, "T") != 0)) {
             continue;
         }
         
-        // Get line number
-        cJSON *number = cJSON_GetObjectItem(departure, "number");
         if (!number) continue;
-        const char *line = cJSON_GetStringValue(number);
         
         // Filter selected lines only
         if (!is_selected_bus_line(line)) {
+            ESP_LOGW(TAG, "Skipping line '%s' (not in selected list: %s)", line, SELECTED_BUS_LINES);
             continue;
         }
-        
-        // Get destination
-        cJSON *to = cJSON_GetObjectItem(departure, "to");
-        const char *destination = to ? cJSON_GetStringValue(to) : "Unknown";
         
         // Determine direction based on passList (find first valid next stop)
         char direction_name[64] = "Unknown";

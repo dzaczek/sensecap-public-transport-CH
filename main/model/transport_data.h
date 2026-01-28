@@ -47,7 +47,7 @@ extern "C" {
 // Selected bus lines to display (comma-separated, e.g., "1,4,12")
 // Leave empty or comment out logic in transport_data.c to show all
 #ifndef SELECTED_BUS_LINES
-#define SELECTED_BUS_LINES "31,32"
+#define SELECTED_BUS_LINES "*"
 #endif
 
 // 4. Refresh Intervals
