@@ -1,6 +1,12 @@
 # SenseCAP Indicator - Public Transport Monitor
+![IMG_2392](https://github.com/user-attachments/assets/b7e9e707-1367-475a-8f56-98d6d0495c97)
+![2026-01-28-084331](https://github.com/user-attachments/assets/6f3404b9-2e2a-41f3-a3b9-6d2db02f0c86)
 
 A standalone ESP32-S3 project for the SenseCAP Indicator that displays real-time public transport departures (Bus & Train).
+
+
+https://github.com/user-attachments/assets/1254bb7c-477e-4dfc-a4a2-b6e64ac58457
+
 
 This application fetches data from the [Open Transport Data Swiss API](https://transport.opendata.ch/) and displays it on the device's screen using LVGL.
 
