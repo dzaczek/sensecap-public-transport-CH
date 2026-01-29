@@ -250,3 +250,59 @@ esp_err_t network_manager_ping(const char *host)
     // Simple DNS check passed, returning OK
     return ESP_OK; 
 }
+
+esp_err_t network_manager_get_network_info(struct view_data_network_info *info)
+{
+    if (!info) return ESP_ERR_INVALID_ARG;
+    memset(info, 0, sizeof(*info));
+
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (!netif) {
+        strcpy(info->ip, "-");
+        strcpy(info->gateway, "-");
+        strcpy(info->netmask, "-");
+        strcpy(info->dns_primary, "-");
+        strcpy(info->dns_secondary, "-");
+        info->connected = false;
+        return ESP_FAIL;
+    }
+
+    esp_netif_ip_info_t ip_info;
+    if (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK) {
+        snprintf(info->ip, sizeof(info->ip), IPSTR, IP2STR(&ip_info.ip));
+        snprintf(info->gateway, sizeof(info->gateway), IPSTR, IP2STR(&ip_info.gw));
+        snprintf(info->netmask, sizeof(info->netmask), IPSTR, IP2STR(&ip_info.netmask));
+    } else {
+        strcpy(info->ip, "-");
+        strcpy(info->gateway, "-");
+        strcpy(info->netmask, "-");
+    }
+
+    esp_netif_dns_info_t dns_info;
+    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_info) == ESP_OK &&
+        dns_info.ip.u_addr.ip4.addr != 0) {
+        snprintf(info->dns_primary, sizeof(info->dns_primary), IPSTR,
+                 IP2STR(&dns_info.ip.u_addr.ip4));
+    } else {
+        strcpy(info->dns_primary, "-");
+    }
+    if (esp_netif_get_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns_info) == ESP_OK &&
+        dns_info.ip.u_addr.ip4.addr != 0) {
+        snprintf(info->dns_secondary, sizeof(info->dns_secondary), IPSTR,
+                 IP2STR(&dns_info.ip.u_addr.ip4));
+    } else {
+        strcpy(info->dns_secondary, "-");
+    }
+
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
+        strncpy(info->ssid, (char *)ap_info.ssid, sizeof(info->ssid) - 1);
+        info->rssi = ap_info.rssi;
+        info->connected = true;
+    } else {
+        info->ssid[0] = '\0';
+        info->rssi = 0;
+        info->connected = (info->ip[0] != '-' && info->ip[0] != '\0');
+    }
+    return ESP_OK;
+}

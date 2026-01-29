@@ -1382,26 +1382,16 @@ static void fetch_train_task(void *arg)
  */
 static void refresh_timer_callback(TimerHandle_t xTimer)
 {
-    int interval = transport_data_get_refresh_interval();
-    ESP_LOGI(TAG, "Refresh timer triggered (interval: %d min, day mode: %s)", 
-             interval, transport_data_is_day_mode() ? "yes" : "no");
-    
-    // Update timer period for next refresh based on current time
-    int new_interval = transport_data_get_refresh_interval();
-    xTimerChangePeriod(xTimer, pdMS_TO_TICKS(new_interval * 60 * 1000), 0);
-    
-    // FETCH DATA ONLY FOR ACTIVE SCREEN
+    /* Keep callback minimal: run in Tmr Svc task with limited stack. */
+    int interval_min = transport_data_get_refresh_interval();
+    xTimerChangePeriod(xTimer, pdMS_TO_TICKS(interval_min * 60 * 1000), 0);
+
     if (g_active_screen == 0) {
-        // Bus Screen Active
-        ESP_LOGI(TAG, "Refreshing active screen: BUS");
         xTaskCreate(fetch_bus_task, "fetch_bus", 8192, NULL, 5, NULL);
     } else if (g_active_screen == 1) {
-        // Train Screen Active
-        ESP_LOGI(TAG, "Refreshing active screen: TRAIN");
         xTaskCreate(fetch_train_task, "fetch_train", 8192, NULL, 5, NULL);
-    } else {
-        ESP_LOGI(TAG, "Active screen is Settings (%d), skipping refresh", g_active_screen);
     }
+    /* Settings screen: skip refresh (no log here to save stack) */
 }
 
 esp_err_t transport_data_init(void)

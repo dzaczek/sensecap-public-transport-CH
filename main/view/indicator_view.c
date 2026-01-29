@@ -58,6 +58,8 @@ static void sleep_slider_cb(lv_event_t *e);
 static void time_update_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void tabview_event_cb(lv_event_t *e);
+static void update_station_buttons_availability(void);
+static void loading_arc_anim_cb(void *var, int32_t value);
 
 typedef struct {
     const char *name;
@@ -123,12 +125,16 @@ static lv_obj_t *brightness_label = NULL;
 static lv_obj_t *sleep_slider = NULL;
 static lv_obj_t *sleep_label = NULL;
 
-// WiFi Screen widgets
+// Settings / Display screen widgets
 static lv_obj_t *settings_main_cont = NULL;
+static lv_obj_t *display_settings_cont = NULL;
+// WiFi Screen widgets
 static lv_obj_t *wifi_view_cont = NULL;
+static lv_obj_t *wifi_netinfo_cont = NULL;  /* panel with IP, DNS, RSSI, etc. */
 static lv_obj_t *wifi_list = NULL;
 static lv_obj_t *wifi_password_view_cont = NULL;
 static lv_obj_t *wifi_password_ta = NULL;
+static lv_obj_t *wifi_password_ssid_label = NULL;  /* left panel SSID, updated when shown */
 static lv_obj_t *wifi_keyboard = NULL;
 static char current_wifi_ssid[32];
 
@@ -139,6 +145,7 @@ static void update_train_details_screen(const struct view_data_train_details *da
 static void update_bus_details_screen(const struct view_data_bus_details *data);
 static void update_settings_screen(const struct view_data_settings *data);
 static void update_wifi_list(const struct view_data_wifi_list *list);
+static void update_wifi_network_info(void);
 static void create_bus_screen(lv_obj_t *parent);
 static void create_bus_details_screen(lv_obj_t *parent);
 static void create_train_screen(lv_obj_t *parent);
@@ -164,11 +171,14 @@ static void next_btn_cb(lv_event_t *e);
 static void brightness_slider_cb(lv_event_t *e);
 static void sleep_slider_cb(lv_event_t *e);
 static void wifi_btn_cb(lv_event_t *e);
+static void display_btn_cb(lv_event_t *e);
+static void display_back_btn_cb(lv_event_t *e);
 static void wifi_back_btn_cb(lv_event_t *e);
 static void wifi_scan_btn_cb(lv_event_t *e);
 static void wifi_list_item_cb(lv_event_t *e);
 static void wifi_password_back_btn_cb(lv_event_t *e);
 static void wifi_connect_btn_cb(lv_event_t *e);
+static void wifi_save_backup_btn_cb(lv_event_t *e);
 static void wifi_keyboard_event_cb(lv_event_t *e);
 static void time_update_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
@@ -993,6 +1003,45 @@ static void update_settings_screen(const struct view_data_settings *data)
 }
 
 /**
+ * @brief Animation callback for arc-based loading spinner (rotation 0..360).
+ */
+static void loading_arc_anim_cb(void *var, int32_t value)
+{
+    lv_arc_set_rotation((lv_obj_t *)var, (uint16_t)value);
+}
+
+/**
+ * @brief Update bus/train station selection buttons: disabled (gray) until network + time sync.
+ */
+static void update_station_buttons_availability(void)
+{
+    bool ready = network_manager_is_connected() && indicator_time_is_synced();
+
+    if (bus_selection_cont) {
+        uint32_t n = lv_obj_get_child_cnt(bus_selection_cont);
+        for (uint32_t i = 1; i < n; i++) {
+            lv_obj_t *btn = lv_obj_get_child(bus_selection_cont, i);
+            if (ready) {
+                lv_obj_clear_state(btn, LV_STATE_DISABLED);
+            } else {
+                lv_obj_add_state(btn, LV_STATE_DISABLED);
+            }
+        }
+    }
+    if (station_selection_cont) {
+        uint32_t n = lv_obj_get_child_cnt(station_selection_cont);
+        for (uint32_t i = 1; i < n; i++) {
+            lv_obj_t *btn = lv_obj_get_child(station_selection_cont, i);
+            if (ready) {
+                lv_obj_clear_state(btn, LV_STATE_DISABLED);
+            } else {
+                lv_obj_add_state(btn, LV_STATE_DISABLED);
+            }
+        }
+    }
+}
+
+/**
  * @brief Create bus countdown screen
  */
 static void create_bus_screen(lv_obj_t *parent)
@@ -1024,6 +1073,7 @@ static void create_bus_screen(lv_obj_t *parent)
         lv_obj_set_width(btn, LV_PCT(100));
         lv_obj_set_height(btn, 50);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x008000), 0); // Green
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x505050), LV_PART_MAIN | LV_STATE_DISABLED);
         lv_obj_add_event_cb(btn, bus_stop_select_cb, LV_EVENT_CLICKED, (void*)&predefined_bus_stops[i]);
         
         lv_obj_t *lbl = lv_label_create(btn);
@@ -1038,12 +1088,36 @@ static void create_bus_screen(lv_obj_t *parent)
     lv_obj_set_style_bg_opa(bus_loading_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(bus_loading_cont, 0, 0);
     lv_obj_add_flag(bus_loading_cont, LV_OBJ_FLAG_HIDDEN);
-    
+#if LV_USE_SPINNER
+    lv_obj_t *bus_spinner = lv_spinner_create(bus_loading_cont, 1000, 60);
+    lv_obj_set_size(bus_spinner, 80, 80);
+    lv_obj_align(bus_spinner, LV_ALIGN_CENTER, 0, -30);
+    lv_obj_set_style_arc_color(bus_spinner, lv_color_white(), LV_PART_INDICATOR);
+#else
+    lv_obj_t *bus_arc = lv_arc_create(bus_loading_cont);
+    lv_obj_set_size(bus_arc, 80, 80);
+    lv_obj_align(bus_arc, LV_ALIGN_CENTER, 0, -30);
+    lv_arc_set_range(bus_arc, 0, 360);
+    lv_arc_set_bg_angles(bus_arc, 0, 360);
+    lv_arc_set_angles(bus_arc, 0, 90);
+    lv_obj_set_style_arc_color(bus_arc, lv_color_hex(0x404040), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(bus_arc, lv_color_white(), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(bus_arc, 6, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(bus_arc, 6, LV_PART_INDICATOR);
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_var(&a, bus_arc);
+    lv_anim_set_exec_cb(&a, loading_arc_anim_cb);
+    lv_anim_set_values(&a, 0, 360);
+    lv_anim_set_time(&a, 1000);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
+#endif
     lv_obj_t *loading_lbl = lv_label_create(bus_loading_cont);
     lv_label_set_text(loading_lbl, "Loading data...");
     lv_obj_set_style_text_font(loading_lbl, &arimo_20, 0);
     lv_obj_set_style_text_color(loading_lbl, lv_color_white(), 0);
-    lv_obj_center(loading_lbl);
+    lv_obj_align(loading_lbl, LV_ALIGN_CENTER, 0, 30);
     
     // --- 3. Bus View Container (Existing View) ---
     bus_view_cont = lv_obj_create(bus_screen);
@@ -1166,6 +1240,7 @@ static void create_train_screen(lv_obj_t *parent)
         lv_obj_set_width(btn, LV_PCT(100));
         lv_obj_set_height(btn, 50);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0xEB0000), 0); // SBB Red
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x505050), LV_PART_MAIN | LV_STATE_DISABLED);
         lv_obj_add_event_cb(btn, station_select_cb, LV_EVENT_CLICKED, (void*)&predefined_stations[i]);
         
         lv_obj_t *lbl = lv_label_create(btn);
@@ -1180,12 +1255,36 @@ static void create_train_screen(lv_obj_t *parent)
     lv_obj_set_style_bg_opa(loading_cont, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(loading_cont, 0, 0);
     lv_obj_add_flag(loading_cont, LV_OBJ_FLAG_HIDDEN);
-    
+#if LV_USE_SPINNER
+    lv_obj_t *train_spinner = lv_spinner_create(loading_cont, 1000, 60);
+    lv_obj_set_size(train_spinner, 80, 80);
+    lv_obj_align(train_spinner, LV_ALIGN_CENTER, 0, -30);
+    lv_obj_set_style_arc_color(train_spinner, lv_color_white(), LV_PART_INDICATOR);
+#else
+    lv_obj_t *train_arc = lv_arc_create(loading_cont);
+    lv_obj_set_size(train_arc, 80, 80);
+    lv_obj_align(train_arc, LV_ALIGN_CENTER, 0, -30);
+    lv_arc_set_range(train_arc, 0, 360);
+    lv_arc_set_bg_angles(train_arc, 0, 360);
+    lv_arc_set_angles(train_arc, 0, 90);
+    lv_obj_set_style_arc_color(train_arc, lv_color_hex(0x404040), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(train_arc, lv_color_white(), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(train_arc, 6, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(train_arc, 6, LV_PART_INDICATOR);
+    lv_anim_t a2;
+    lv_anim_init(&a2);
+    lv_anim_set_var(&a2, train_arc);
+    lv_anim_set_exec_cb(&a2, loading_arc_anim_cb);
+    lv_anim_set_values(&a2, 0, 360);
+    lv_anim_set_time(&a2, 1000);
+    lv_anim_set_repeat_count(&a2, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a2);
+#endif
     lv_obj_t *loading_lbl = lv_label_create(loading_cont);
     lv_label_set_text(loading_lbl, "Loading data...");
     lv_obj_set_style_text_font(loading_lbl, &arimo_20, 0);
     lv_obj_set_style_text_color(loading_lbl, lv_color_white(), 0);
-    lv_obj_center(loading_lbl);
+    lv_obj_align(loading_lbl, LV_ALIGN_CENTER, 0, 30);
     
     // --- 3. Train View Container (Existing View) ---
     train_view_cont = lv_obj_create(train_screen);
@@ -1268,7 +1367,7 @@ static void wifi_btn_cb(lv_event_t *e)
     // Hide main settings, show WiFi view
     lv_obj_add_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
-    
+    update_wifi_network_info();
     // Request scan immediately
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_LIST_REQ, NULL, 0, portMAX_DELAY);
 }
@@ -1279,6 +1378,24 @@ static void wifi_btn_cb(lv_event_t *e)
 static void wifi_back_btn_cb(lv_event_t *e)
 {
     lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Open Display settings (hide main, show display submenu)
+ */
+static void display_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(display_settings_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Back from Display settings to main Settings
+ */
+static void display_back_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(display_settings_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -1309,6 +1426,9 @@ static void wifi_list_item_cb(lv_event_t *e)
     if (item->auth_mode) {
         // Needs password
         lv_textarea_set_text(wifi_password_ta, "");
+        if (wifi_password_ssid_label) {
+            lv_label_set_text(wifi_password_ssid_label, current_wifi_ssid[0] ? current_wifi_ssid : "—");
+        }
         lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     } else {
@@ -1330,6 +1450,25 @@ static void wifi_list_item_cb(lv_event_t *e)
  */
 static void wifi_password_back_btn_cb(lv_event_t *e)
 {
+    lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Save current SSID + password as backup network (fallback after 2 min)
+ */
+static void wifi_save_backup_btn_cb(lv_event_t *e)
+{
+    struct view_data_wifi_config cfg = {0};
+    strlcpy(cfg.ssid, current_wifi_ssid, sizeof(cfg.ssid));
+    const char *password = lv_textarea_get_text(wifi_password_ta);
+    if (password && strlen(password) > 0) {
+        strlcpy((char *)cfg.password, password, sizeof(cfg.password));
+        cfg.have_password = true;
+    } else {
+        cfg.have_password = false;
+    }
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SET_BACKUP, &cfg, sizeof(cfg), portMAX_DELAY);
     lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1409,6 +1548,56 @@ static void update_wifi_list(const struct view_data_wifi_list *list)
 }
 
 /**
+ * @brief Refresh WiFi network info panel (IP, DNS, gateway, RSSI, etc.)
+ */
+static void update_wifi_network_info(void)
+{
+    if (!wifi_netinfo_cont) return;
+    struct view_data_network_info info;
+    if (network_manager_get_network_info(&info) != ESP_OK) {
+        info.connected = false;
+        strcpy(info.ip, "-");
+        strcpy(info.gateway, "-");
+        strcpy(info.netmask, "-");
+        strcpy(info.dns_primary, "-");
+        strcpy(info.dns_secondary, "-");
+        info.ssid[0] = '\0';
+        info.rssi = 0;
+    }
+    lv_port_sem_take();
+    uint32_t n = lv_obj_get_child_cnt(wifi_netinfo_cont);
+    if (n >= 1) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 0);
+        lv_label_set_text_fmt(lbl, "Status: %s", info.connected ? "Connected" : "Not connected");
+    }
+    if (n >= 2) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 1);
+        lv_label_set_text_fmt(lbl, "SSID: %s", info.ssid[0] ? info.ssid : "-");
+    }
+    if (n >= 3) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 2);
+        lv_label_set_text_fmt(lbl, "IP: %s", info.ip);
+    }
+    if (n >= 4) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 3);
+        lv_label_set_text_fmt(lbl, "Gateway: %s", info.gateway);
+    }
+    if (n >= 5) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 4);
+        lv_label_set_text_fmt(lbl, "Netmask: %s", info.netmask);
+    }
+    if (n >= 6) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 5);
+        lv_label_set_text_fmt(lbl, "DNS: %s / %s", info.dns_primary, info.dns_secondary);
+    }
+    if (n >= 7) {
+        lv_obj_t *lbl = lv_obj_get_child(wifi_netinfo_cont, 6);
+        lv_label_set_text_fmt(lbl, "Signal: %d dBm", info.rssi);
+    }
+    lv_port_sem_give();
+}
+
+/**
  * @brief Create WiFi Screen
  */
 static void create_wifi_screen(lv_obj_t *parent)
@@ -1436,7 +1625,7 @@ static void create_wifi_screen(lv_obj_t *parent)
     lv_obj_center(back_lbl);
     
     lv_obj_t *title = lv_label_create(header);
-    lv_label_set_text(title, "WiFi Networks");
+    lv_label_set_text(title, "WiFi");
     lv_obj_center(title);
     
     lv_obj_t *scan_btn = lv_btn_create(header);
@@ -1444,14 +1633,31 @@ static void create_wifi_screen(lv_obj_t *parent)
     lv_obj_align(scan_btn, LV_ALIGN_RIGHT_MID, -5, 0);
     lv_obj_add_event_cb(scan_btn, wifi_scan_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *scan_lbl = lv_label_create(scan_btn);
-    lv_label_set_text(scan_lbl, "R");
+    lv_label_set_text(scan_lbl, "Scan");
     lv_obj_center(scan_lbl);
     
-    // List
+    // Network info panel (scrollable, under header)
+    wifi_netinfo_cont = lv_obj_create(wifi_view_cont);
+    lv_obj_set_size(wifi_netinfo_cont, LV_PCT(100), 165);
+    lv_obj_set_y(wifi_netinfo_cont, 50);
+    lv_obj_set_style_bg_color(wifi_netinfo_cont, lv_color_hex(0x1a1a1a), 0);
+    lv_obj_set_style_border_width(wifi_netinfo_cont, 0, 0);
+    lv_obj_set_style_pad_all(wifi_netinfo_cont, 8, 0);
+    lv_obj_set_flex_flow(wifi_netinfo_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(wifi_netinfo_cont, 2, 0);
+    lv_obj_set_style_text_color(wifi_netinfo_cont, lv_color_white(), 0);
+    for (int i = 0; i < 7; i++) {
+        lv_obj_t *lbl = lv_label_create(wifi_netinfo_cont);
+        lv_label_set_text(lbl, "-");
+        lv_obj_set_style_text_font(lbl, &arimo_14, 0);
+    }
+    /* Do not update info here (model not inited yet). Will update on open/event. */
+    
+    // List of networks (below info panel)
     wifi_list = lv_obj_create(wifi_view_cont);
     lv_obj_set_size(wifi_list, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_y(wifi_list, 50);
-    lv_obj_set_height(wifi_list, lv_pct(100)); // minus header? lvgl handles overflow or we use flex
+    lv_obj_set_y(wifi_list, 215);
+    lv_obj_set_height(wifi_list, lv_pct(100));
     lv_obj_set_style_bg_color(wifi_list, lv_color_black(), 0);
     lv_obj_set_style_border_width(wifi_list, 0, 0);
     lv_obj_set_flex_flow(wifi_list, LV_FLEX_FLOW_COLUMN);
@@ -1459,7 +1665,7 @@ static void create_wifi_screen(lv_obj_t *parent)
 }
 
 /**
- * @brief Create WiFi Password Screen
+ * @brief Create WiFi Password Screen – right-side password panel for readability
  */
 static void create_wifi_password_screen(lv_obj_t *parent)
 {
@@ -1469,37 +1675,77 @@ static void create_wifi_password_screen(lv_obj_t *parent)
     lv_obj_set_style_border_width(wifi_password_view_cont, 0, 0);
     lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     
-    // Title
-    lv_obj_t *lbl = lv_label_create(wifi_password_view_cont);
-    lv_label_set_text(lbl, "Enter Password:");
-    lv_obj_align(lbl, LV_ALIGN_TOP_MID, 0, 10);
+    // Left side: SSID / instruction (50% width)
+    lv_obj_t *left_panel = lv_obj_create(wifi_password_view_cont);
+    lv_obj_set_size(left_panel, LV_PCT(50), LV_PCT(100));
+    lv_obj_set_style_bg_opa(left_panel, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(left_panel, 0, 0);
+    lv_obj_align(left_panel, LV_ALIGN_LEFT_MID, 0, 0);
     
-    // Text area
-    wifi_password_ta = lv_textarea_create(wifi_password_view_cont);
+    wifi_password_ssid_label = lv_label_create(left_panel);
+    lv_label_set_text(wifi_password_ssid_label, "—");
+    lv_obj_set_style_text_font(wifi_password_ssid_label, &arimo_20, 0);
+    lv_obj_set_style_text_color(wifi_password_ssid_label, lv_color_white(), 0);
+    lv_obj_align(wifi_password_ssid_label, LV_ALIGN_TOP_MID, 0, 30);
+    
+    lv_obj_t *hint_lbl = lv_label_create(left_panel);
+    lv_label_set_text(hint_lbl, "Enter password on the right");
+    lv_obj_set_style_text_font(hint_lbl, &arimo_16, 0);
+    lv_obj_set_style_text_color(hint_lbl, lv_color_hex(0xaaaaaa), 0);
+    lv_obj_align(hint_lbl, LV_ALIGN_TOP_MID, 0, 80);
+    
+    // Right side: password panel (50% width) – more readable
+    lv_obj_t *right_panel = lv_obj_create(wifi_password_view_cont);
+    lv_obj_set_size(right_panel, LV_PCT(50), LV_PCT(100));
+    lv_obj_set_style_bg_color(right_panel, lv_color_hex(0x1a1a1a), 0);
+    lv_obj_set_style_border_width(right_panel, 0, 0);
+    lv_obj_set_style_pad_all(right_panel, 12, 0);
+    lv_obj_align(right_panel, LV_ALIGN_RIGHT_MID, 0, 0);
+    
+    lv_obj_t *pass_title = lv_label_create(right_panel);
+    lv_label_set_text(pass_title, "Password");
+    lv_obj_set_style_text_font(pass_title, &arimo_20, 0);
+    lv_obj_set_style_text_color(pass_title, lv_color_white(), 0);
+    lv_obj_align(pass_title, LV_ALIGN_TOP_LEFT, 0, 10);
+    
+    wifi_password_ta = lv_textarea_create(right_panel);
     lv_textarea_set_one_line(wifi_password_ta, true);
     lv_textarea_set_password_mode(wifi_password_ta, true);
-    lv_obj_set_width(wifi_password_ta, LV_PCT(90));
-    lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_MID, 0, 40);
+    lv_obj_set_size(wifi_password_ta, LV_PCT(100), 60);
+    lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_LEFT, 0, 45);
+    lv_obj_set_style_text_font(wifi_password_ta, &arimo_20, 0);
     
-    // Connect Button
-    lv_obj_t *btn = lv_btn_create(wifi_password_view_cont);
-    lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -10, 80);
+    lv_obj_t *btn = lv_btn_create(right_panel);
+    lv_obj_set_size(btn, LV_PCT(100), 48);
+    lv_obj_align(btn, LV_ALIGN_TOP_LEFT, 0, 120);
     lv_obj_add_event_cb(btn, wifi_connect_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *btn_lbl = lv_label_create(btn);
     lv_label_set_text(btn_lbl, "Connect");
+    lv_obj_set_style_text_font(btn_lbl, &arimo_20, 0);
     lv_obj_center(btn_lbl);
     
-    // Cancel Button
-    lv_obj_t *cancel_btn = lv_btn_create(wifi_password_view_cont);
-    lv_obj_align(cancel_btn, LV_ALIGN_TOP_LEFT, 10, 80);
+    lv_obj_t *cancel_btn = lv_btn_create(right_panel);
+    lv_obj_set_size(cancel_btn, LV_PCT(100), 48);
+    lv_obj_align(cancel_btn, LV_ALIGN_TOP_LEFT, 0, 178);
     lv_obj_add_event_cb(cancel_btn, wifi_password_back_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *cancel_lbl = lv_label_create(cancel_btn);
     lv_label_set_text(cancel_lbl, "Cancel");
+    lv_obj_set_style_text_font(cancel_lbl, &arimo_20, 0);
     lv_obj_center(cancel_lbl);
 
-    // Keyboard
+    lv_obj_t *backup_btn = lv_btn_create(right_panel);
+    lv_obj_set_size(backup_btn, LV_PCT(100), 44);
+    lv_obj_align(backup_btn, LV_ALIGN_TOP_LEFT, 0, 234);
+    lv_obj_add_event_cb(backup_btn, wifi_save_backup_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *backup_lbl = lv_label_create(backup_btn);
+    lv_label_set_text(backup_lbl, "Save as backup");
+    lv_obj_set_style_text_font(backup_lbl, &arimo_16, 0);
+    lv_obj_center(backup_lbl);
+
     wifi_keyboard = lv_keyboard_create(wifi_password_view_cont);
     lv_keyboard_set_textarea(wifi_keyboard, wifi_password_ta);
+    lv_obj_set_size(wifi_keyboard, LV_PCT(100), LV_PCT(40));
+    lv_obj_align(wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_event_cb(wifi_keyboard, wifi_keyboard_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
@@ -1664,50 +1910,67 @@ static void create_settings_screen(lv_obj_t *parent)
     create_wifi_screen(settings_screen);
     create_wifi_password_screen(settings_screen);
     
-    // WiFi status
-    wifi_status_label = lv_label_create(settings_main_cont);
-    lv_label_set_text(wifi_status_label, "WiFi: Not connected");
-    lv_obj_align(wifi_status_label, LV_ALIGN_TOP_LEFT, 10, 10);
-    
-    // IP address
-    ip_label = lv_label_create(settings_main_cont);
-    lv_label_set_text(ip_label, "IP: Not available");
-    lv_obj_align(ip_label, LV_ALIGN_TOP_LEFT, 10, 40);
-    
-    // API status
-    api_status_label = lv_label_create(settings_main_cont);
-    lv_label_set_text(api_status_label, "API: Unknown");
-    lv_obj_align(api_status_label, LV_ALIGN_TOP_LEFT, 10, 70);
-
-    // WiFi Config Button
+    // Main menu: two buttons only
     lv_obj_t *btn_wifi = lv_btn_create(settings_main_cont);
-    lv_obj_set_size(btn_wifi, 100, 40);
-    lv_obj_align(btn_wifi, LV_ALIGN_TOP_RIGHT, -10, 10);
+    lv_obj_set_size(btn_wifi, LV_PCT(90), 55);
+    lv_obj_align(btn_wifi, LV_ALIGN_TOP_MID, 0, 30);
     lv_obj_add_event_cb(btn_wifi, wifi_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *lbl_wifi = lv_label_create(btn_wifi);
     lv_label_set_text(lbl_wifi, "WiFi");
+    lv_obj_set_style_text_font(lbl_wifi, &arimo_20, 0);
     lv_obj_center(lbl_wifi);
-    
-    // Brightness slider
-    brightness_label = lv_label_create(settings_main_cont);
+
+    lv_obj_t *btn_display = lv_btn_create(settings_main_cont);
+    lv_obj_set_size(btn_display, LV_PCT(90), 55);
+    lv_obj_align(btn_display, LV_ALIGN_TOP_MID, 0, 100);
+    lv_obj_add_event_cb(btn_display, display_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_display = lv_label_create(btn_display);
+    lv_label_set_text(lbl_display, "Display");
+    lv_obj_set_style_text_font(lbl_display, &arimo_20, 0);
+    lv_obj_center(lbl_display);
+
+    // Display settings submenu (hidden by default)
+    display_settings_cont = lv_obj_create(settings_screen);
+    lv_obj_set_size(display_settings_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(display_settings_cont, 10, 0);
+    lv_obj_set_style_bg_opa(display_settings_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(display_settings_cont, 0, 0);
+    lv_obj_add_flag(display_settings_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *display_back_btn = lv_btn_create(display_settings_cont);
+    lv_obj_set_size(display_back_btn, 60, 40);
+    lv_obj_align(display_back_btn, LV_ALIGN_TOP_LEFT, 10, 10);
+    lv_obj_add_event_cb(display_back_btn, display_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *display_back_lbl = lv_label_create(display_back_btn);
+    lv_label_set_text(display_back_lbl, "<");
+    lv_obj_center(display_back_lbl);
+
+    lv_obj_t *display_title = lv_label_create(display_settings_cont);
+    lv_label_set_text(display_title, "Display");
+    lv_obj_set_style_text_font(display_title, &arimo_20, 0);
+    lv_obj_set_style_text_color(display_title, lv_color_white(), 0);
+    lv_obj_align(display_title, LV_ALIGN_TOP_MID, 0, 15);
+
+    brightness_label = lv_label_create(display_settings_cont);
     lv_label_set_text(brightness_label, "Brightness: 50%");
-    lv_obj_align(brightness_label, LV_ALIGN_TOP_LEFT, 10, 110);
-    
-    brightness_slider = lv_slider_create(settings_main_cont);
+    lv_obj_align(brightness_label, LV_ALIGN_TOP_LEFT, 10, 70);
+    lv_obj_set_style_text_color(brightness_label, lv_color_white(), 0);
+
+    brightness_slider = lv_slider_create(display_settings_cont);
     lv_obj_set_size(brightness_slider, LV_PCT(80), 20);
-    lv_obj_align(brightness_slider, LV_ALIGN_TOP_LEFT, 10, 140);
+    lv_obj_align(brightness_slider, LV_ALIGN_TOP_LEFT, 10, 100);
     lv_slider_set_range(brightness_slider, 0, 100);
     lv_slider_set_value(brightness_slider, 50, LV_ANIM_OFF);
     lv_obj_add_event_cb(brightness_slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    
-    // Sleep timeout slider
-    sleep_label = lv_label_create(settings_main_cont);
+
+    sleep_label = lv_label_create(display_settings_cont);
     lv_label_set_text(sleep_label, "Timeout: Always On");
-    lv_obj_align(sleep_label, LV_ALIGN_TOP_LEFT, 10, 180);
-    
-    sleep_slider = lv_slider_create(settings_main_cont);
+    lv_obj_align(sleep_label, LV_ALIGN_TOP_LEFT, 10, 150);
+    lv_obj_set_style_text_color(sleep_label, lv_color_white(), 0);
+
+    sleep_slider = lv_slider_create(display_settings_cont);
     lv_obj_set_size(sleep_slider, LV_PCT(80), 20);
-    lv_obj_align(sleep_slider, LV_ALIGN_TOP_LEFT, 10, 210);
+    lv_obj_align(sleep_slider, LV_ALIGN_TOP_LEFT, 10, 180);
     lv_slider_set_range(sleep_slider, 0, 100);
     lv_slider_set_value(sleep_slider, 0, LV_ANIM_OFF);
     lv_obj_add_event_cb(sleep_slider, sleep_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -1776,6 +2039,12 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             const struct view_data_settings *data = 
                 (const struct view_data_settings *)event_data;
             update_settings_screen(data);
+            update_station_buttons_availability();
+            break;
+        }
+        case VIEW_EVENT_WIFI_ST: {
+            update_station_buttons_availability();
+            update_wifi_network_info();
             break;
         }
         case VIEW_EVENT_TRANSPORT_REFRESH: {
@@ -1852,6 +2121,8 @@ int indicator_view_init(void)
     // Create details screen as child of train tab, so it overlays the train screen
     create_train_details_screen(train_tab);
     create_settings_screen(settings_tab);
+    /* Do not call update_station_buttons_availability() here – model (time, network) is not inited yet.
+     * It will run on first VIEW_EVENT_SETTINGS_UPDATE or VIEW_EVENT_WIFI_ST after model init. */
     
     // Register event handler
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
@@ -1883,6 +2154,9 @@ int indicator_view_init(void)
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_TRAIN_REFRESH,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_WIFI_ST,
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_WIFI_LIST,

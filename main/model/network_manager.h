@@ -65,6 +65,13 @@ esp_err_t network_manager_ping_init(void);
  */
 esp_err_t network_manager_ping(const char *host);
 
+/**
+ * @brief Get full network info (IP, gateway, netmask, DNS, SSID, RSSI)
+ * @param info Output structure to fill
+ * @return ESP_OK on success
+ */
+esp_err_t network_manager_get_network_info(struct view_data_network_info *info);
+
 #ifdef __cplusplus
 }
 #endif

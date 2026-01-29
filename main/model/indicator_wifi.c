@@ -1,6 +1,8 @@
 #include "indicator_wifi.h"
+#include "indicator_storage.h"
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -16,6 +18,8 @@
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
+#define WIFI_BACKUP_STORAGE "wifi-backup"
+#define WIFI_BACKUP_FALLBACK_MS (2 * 60 * 1000)
 
 struct indicator_wifi
 {
@@ -33,6 +37,7 @@ static SemaphoreHandle_t   __g_net_check_sem;
 static int s_retry_num = 0;
 static int wifi_retry_max  = 3;
 static bool __g_ping_done = true;
+static TimerHandle_t backup_fallback_timer = NULL;
 
 
 static EventGroupHandle_t __wifi_event_group;
@@ -76,6 +81,9 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
         }
         case WIFI_EVENT_STA_CONNECTED: {
             ESP_LOGI(TAG, "wifi event: WIFI_EVENT_STA_CONNECTED");
+            if (backup_fallback_timer) {
+                xTimerStop(backup_fallback_timer, 0);
+            }
             wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t*) event_data;
             struct view_data_wifi_st st;
 
@@ -104,10 +112,7 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
                 ESP_LOGI(TAG, "retry to connect to the AP");
 
             } else {
-                
-                // update list  todo
                 struct view_data_wifi_st st;
-        
                 __wifi_st_get(&st);
                 st.is_connected = false;
                 st.is_network   = false;
@@ -116,11 +121,14 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
 
                 esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_ST, &st, sizeof(struct view_data_wifi_st ), portMAX_DELAY);
                 
-                char *p_str = "";
                 struct view_data_wifi_connet_ret_msg msg;
                 msg.ret = 0;
                 strcpy(msg.msg, "Connection failure");
                 esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_CONNECT_RET, &msg, sizeof(msg), portMAX_DELAY);
+                /* Start 2-min timer to try backup network */
+                if (backup_fallback_timer) {
+                    xTimerReset(backup_fallback_timer, 0);
+                }
             }
             break;
         }
@@ -214,6 +222,29 @@ static void __wifi_cfg_restore(void)
 
     // restore and stop
     esp_wifi_restore();
+}
+
+/**
+ * @brief Timer callback: after 2 min without primary, try backup network from NVS
+ */
+static void backup_fallback_timer_cb(TimerHandle_t xTimer)
+{
+    struct view_data_wifi_config backup;
+    size_t len = sizeof(backup);
+    if (indicator_storage_read(WIFI_BACKUP_STORAGE, &backup, &len) != ESP_OK) {
+        ESP_LOGI(TAG, "No backup network stored");
+        return;
+    }
+    if (backup.ssid[0] == '\0') {
+        ESP_LOGI(TAG, "Backup SSID empty");
+        return;
+    }
+    ESP_LOGI(TAG, "Trying backup network: %s", backup.ssid);
+    if (backup.have_password) {
+        __wifi_connect(backup.ssid, (const char *)backup.password, 3);
+    } else {
+        __wifi_connect(backup.ssid, NULL, 3);
+    }
 }
 
 static void __wifi_shutdown(void) 
@@ -417,6 +448,14 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             __wifi_cfg_restore();
             break;
         }
+        case VIEW_EVENT_WIFI_SET_BACKUP: {
+            struct view_data_wifi_config *p_cfg = (struct view_data_wifi_config *)event_data;
+            if (p_cfg && p_cfg->ssid[0]) {
+                esp_err_t err = indicator_storage_write(WIFI_BACKUP_STORAGE, p_cfg, sizeof(struct view_data_wifi_config));
+                ESP_LOGI(TAG, "Backup network saved: %s (err=%d)", p_cfg->ssid, err);
+            }
+            break;
+        }
         case VIEW_EVENT_SHUTDOWN: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SHUTDOWN");
             __wifi_shutdown();
@@ -478,10 +517,16 @@ int indicator_wifi_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_WIFI_CFG_DELETE, 
                                                             __view_event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SET_BACKUP, 
+                                                            __view_event_handler, NULL, NULL));
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_SHUTDOWN, 
                                                             __view_event_handler, NULL, NULL));
+
+    backup_fallback_timer = xTimerCreate("wifi_backup", pdMS_TO_TICKS(WIFI_BACKUP_FALLBACK_MS),
+                                         pdFALSE, NULL, backup_fallback_timer_cb);
 
     wifi_config_t wifi_cfg;
     esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);

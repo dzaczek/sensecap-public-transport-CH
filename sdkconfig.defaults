@@ -30,6 +30,9 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 
 
 CONFIG_FREERTOS_HZ=1000
+# Timer Service task stack - all xTimerCreate callbacks run in this task (Tmr Svc).
+# Default 2048 was too small; stack overflow when refresh + display_schedule timers run.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 
 
 CONFIG_LCD_AVOID_TEAR=y

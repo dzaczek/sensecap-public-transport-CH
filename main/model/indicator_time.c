@@ -249,6 +249,15 @@ int indicator_time_init(void)
                                                             __view_event_handler, NULL, NULL));
 }
 
+bool indicator_time_is_synced(void)
+{
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    return timeinfo.tm_year >= (2020 - 1900);
+}
+
 int indicator_time_net_zone_set( char *p)
 {
     xSemaphoreTake(__g_data_mutex, portMAX_DELAY);

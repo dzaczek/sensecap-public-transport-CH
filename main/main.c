@@ -146,7 +146,17 @@ void app_main(void)
     lv_port_sem_give();
 
     indicator_model_init();
-    
+    /* Trigger initial settings/button state now that model is inited */
+    {
+        struct view_data_settings settings = {0};
+        network_manager_get_wifi_status(&settings.wifi_status);
+        network_manager_get_ip(settings.ip_address);
+        settings.api_status = network_manager_is_connected();
+        settings.brightness = 50;
+        settings.sleep_timeout_min = 0;
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SETTINGS_UPDATE,
+                          &settings, sizeof(settings), portMAX_DELAY);
+    }
     // Initialize controller
     extern int indicator_controller_init(void);
     indicator_controller_init();

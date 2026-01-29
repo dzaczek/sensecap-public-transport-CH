@@ -55,6 +55,18 @@ struct view_data_wifi_connet_ret_msg {
     char    msg[64];
 };
 
+/** Full network info for WiFi settings panel (IP, DNS, gateway, RSSI, etc.) */
+struct view_data_network_info {
+    char   ip[16];
+    char   gateway[16];
+    char   netmask[16];
+    char   dns_primary[16];
+    char   dns_secondary[16];
+    char   ssid[32];
+    int8_t rssi;
+    bool   connected;
+};
+
 // Display settings
 struct view_data_display {
     int   brightness; // 0~100
@@ -187,6 +199,7 @@ enum {
     VIEW_EVENT_WIFI_CONNECT,
     VIEW_EVENT_WIFI_CONNECT_RET,
     VIEW_EVENT_WIFI_CFG_DELETE,
+    VIEW_EVENT_WIFI_SET_BACKUP,   /* struct view_data_wifi_config * – save as backup network */
     
     VIEW_EVENT_TIME_CFG_UPDATE,
     VIEW_EVENT_TIME_CFG_APPLY,
