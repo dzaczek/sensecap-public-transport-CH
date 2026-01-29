@@ -83,6 +83,7 @@ struct bus_departure_view {
     int delay_minutes;          // Delay in minutes (negative = early, positive = late)
     int direction_index;        // Index in directions array
     bool valid;
+    char journey_name[64];      // Unique journey reference
 };
 
 // Train departure structure
@@ -96,6 +97,40 @@ struct train_departure_view {
     int minutes_until;          // Minutes until departure
     int delay_minutes;          // Delay in minutes (0 if on time)
     bool valid;
+    char journey_name[64];      // Unique journey reference (e.g. "S11 19055")
+};
+
+// Train details structure (stops/capacity)
+struct train_detail_stop {
+    char name[64];
+    char arrival[16];   // HH:MM
+    char departure[16]; // HH:MM
+    int delay;          // Minutes
+};
+
+struct view_data_train_details {
+    char name[64];             // Train name
+    char operator[32];         // e.g. SBB
+    char capacity_1st[16];     // Low/High/Unknown
+    char capacity_2nd[16];     // Low/High/Unknown
+    struct train_detail_stop stops[30]; // Max 30 intermediate stops
+    int stop_count;
+    bool loading;
+    bool error;
+    char error_msg[64];
+};
+
+// Bus details structure (identical to train for now)
+struct view_data_bus_details {
+    char name[64];
+    char operator[32];
+    char capacity_1st[16];
+    char capacity_2nd[16];
+    struct train_detail_stop stops[30];
+    int stop_count;
+    bool loading;
+    bool error;
+    char error_msg[64];
 };
 
 // Screen A: Bus Countdown
@@ -162,9 +197,13 @@ enum {
     
     VIEW_EVENT_BUS_COUNTDOWN_UPDATE,    // struct view_data_bus_countdown
     VIEW_EVENT_TRAIN_STATION_UPDATE,    // struct view_data_train_station
+    VIEW_EVENT_TRAIN_DETAILS_UPDATE,    // struct view_data_train_details
     VIEW_EVENT_TRANSPORT_REFRESH,       // NULL - trigger manual refresh all
     VIEW_EVENT_BUS_REFRESH,             // NULL - trigger manual refresh bus
     VIEW_EVENT_TRAIN_REFRESH,           // NULL - trigger manual refresh train
+    VIEW_EVENT_TRAIN_DETAILS_REQ,       // char* journey_name - request details
+    VIEW_EVENT_BUS_DETAILS_UPDATE,      // struct view_data_bus_details
+    VIEW_EVENT_BUS_DETAILS_REQ,         // char* journey_name - request details
     VIEW_EVENT_SETTINGS_UPDATE,         // struct view_data_settings
     
     VIEW_EVENT_SHUTDOWN,

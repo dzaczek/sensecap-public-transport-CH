@@ -18,6 +18,8 @@ static const char *TAG = "transport_data";
 // Global data storage
 static struct view_data_bus_countdown g_bus_data = {0};
 static struct view_data_train_station g_train_data = {0};
+static struct view_data_train_details g_train_details = {0};
+static struct view_data_bus_details g_bus_details = {0};
 
 // Time synchronization offset (Real Time - System Time)
 static time_t g_time_offset = 0;
@@ -27,6 +29,7 @@ static time_t g_last_bus_refresh = 0;
 static time_t g_last_train_refresh = 0;
 static bool g_bus_refresh_in_progress = false;
 static bool g_train_refresh_in_progress = false;
+static bool g_details_refresh_in_progress = false;
 static bool g_force_refresh = false;
 
 // Selection state
@@ -371,6 +374,10 @@ static esp_err_t parse_bus_json(const char *json_str)
         cJSON *departure_time_json = stop ? cJSON_GetObjectItem(stop, "departure") : NULL;
         const char *time_str = departure_time_json ? cJSON_GetStringValue(departure_time_json) : NULL;
         
+        // Get journey name (unique ID)
+        cJSON *name_json = cJSON_GetObjectItem(departure, "name");
+        const char *journey_name = name_json ? cJSON_GetStringValue(name_json) : "";
+
         if (!time_str) continue;
         
         time_t dep_time;
@@ -381,6 +388,8 @@ static esp_err_t parse_bus_json(const char *json_str)
         strncpy(g_bus_data.departures[idx].line, line, sizeof(g_bus_data.departures[idx].line) - 1);
         strncpy(g_bus_data.departures[idx].destination, destination, 
                 sizeof(g_bus_data.departures[idx].destination) - 1);
+        strncpy(g_bus_data.departures[idx].journey_name, journey_name,
+                sizeof(g_bus_data.departures[idx].journey_name) - 1);
         
         struct tm timeinfo;
         localtime_r(&dep_time, &timeinfo);
@@ -511,6 +520,10 @@ static esp_err_t parse_train_json(const char *json_str)
         cJSON *departure_time_json = stop ? cJSON_GetObjectItem(stop, "departure") : NULL;
         const char *time_str = departure_time_json ? cJSON_GetStringValue(departure_time_json) : NULL;
 
+        // Get journey name (unique ID)
+        cJSON *name_json = cJSON_GetObjectItem(departure, "name");
+        const char *journey_name = name_json ? cJSON_GetStringValue(name_json) : "";
+
         // Get platform
         cJSON *platform_json = stop ? cJSON_GetObjectItem(stop, "platform") : NULL;
         const char *platform = platform_json ? cJSON_GetStringValue(platform_json) : "";
@@ -534,6 +547,8 @@ static esp_err_t parse_train_json(const char *json_str)
                 sizeof(g_train_data.departures[idx].destination) - 1);
         strncpy(g_train_data.departures[idx].via, via_str,
                 sizeof(g_train_data.departures[idx].via) - 1);
+        strncpy(g_train_data.departures[idx].journey_name, journey_name,
+                sizeof(g_train_data.departures[idx].journey_name) - 1);
         strncpy(g_train_data.departures[idx].platform, platform,
                 sizeof(g_train_data.departures[idx].platform) - 1);
         
@@ -575,6 +590,539 @@ static esp_err_t parse_train_json(const char *json_str)
     cJSON_Delete(root);
     ESP_LOGI(TAG, "Parsed %d train departures", idx);
     return idx > 0 ? ESP_OK : ESP_FAIL;
+}
+
+/**
+ * @brief Parse journey details JSON (from connections endpoint)
+ */
+static esp_err_t parse_journey_json(const char *json_str)
+{
+    if (!json_str) return ESP_FAIL;
+    
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) {
+        ESP_LOGE(TAG, "Failed to parse details JSON");
+        return ESP_FAIL;
+    }
+    
+    // Clear data first
+    memset(&g_train_details, 0, sizeof(g_train_details));
+    
+    // Check connections array
+    cJSON *connections = cJSON_GetObjectItem(root, "connections");
+    if (!connections || !cJSON_IsArray(connections)) {
+        ESP_LOGE(TAG, "No connections array in response");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Get first connection
+    cJSON *connection = cJSON_GetArrayItem(connections, 0);
+    if (!connection) {
+        ESP_LOGE(TAG, "No connection found");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Get sections (we want the journey section)
+    cJSON *sections = cJSON_GetObjectItem(connection, "sections");
+    if (!sections || !cJSON_IsArray(sections)) {
+        ESP_LOGE(TAG, "No sections in connection");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Find the first section with a journey
+    cJSON *journey = NULL;
+    cJSON *section = NULL;
+    cJSON_ArrayForEach(section, sections) {
+        journey = cJSON_GetObjectItem(section, "journey");
+        if (journey) break;
+    }
+    
+    if (!journey) {
+        ESP_LOGE(TAG, "No journey found in sections");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Name
+    cJSON *name = cJSON_GetObjectItem(journey, "name");
+    if (name) strncpy(g_train_details.name, cJSON_GetStringValue(name), sizeof(g_train_details.name)-1);
+    
+    // Operator
+    cJSON *operator = cJSON_GetObjectItem(journey, "operator");
+    if (operator) strncpy(g_train_details.operator, cJSON_GetStringValue(operator), sizeof(g_train_details.operator)-1);
+    
+    // Stops (passList)
+    cJSON *passList = cJSON_GetObjectItem(journey, "passList");
+    if (passList && cJSON_IsArray(passList)) {
+        int idx = 0;
+        cJSON *stop = NULL;
+        cJSON_ArrayForEach(stop, passList) {
+            if (idx >= 30) break;
+            
+            // Station name
+            cJSON *station = cJSON_GetObjectItem(stop, "station");
+            cJSON *st_name = station ? cJSON_GetObjectItem(station, "name") : NULL;
+            if (st_name) strncpy(g_train_details.stops[idx].name, cJSON_GetStringValue(st_name), sizeof(g_train_details.stops[idx].name)-1);
+            
+            // Arrival
+            cJSON *arr = cJSON_GetObjectItem(stop, "arrival");
+            if (arr && cJSON_GetStringValue(arr)) {
+                time_t t;
+                parse_departure_time(cJSON_GetStringValue(arr), &t);
+                struct tm tm;
+                localtime_r(&t, &tm);
+                snprintf(g_train_details.stops[idx].arrival, 16, "%02d:%02d", tm.tm_hour, tm.tm_min);
+            }
+            
+            // Departure
+            cJSON *dep = cJSON_GetObjectItem(stop, "departure");
+            if (dep && cJSON_GetStringValue(dep)) {
+                time_t t;
+                parse_departure_time(cJSON_GetStringValue(dep), &t);
+                struct tm tm;
+                localtime_r(&t, &tm);
+                snprintf(g_train_details.stops[idx].departure, 16, "%02d:%02d", tm.tm_hour, tm.tm_min);
+            }
+            
+            // Delay
+            cJSON *delay = cJSON_GetObjectItem(stop, "delay");
+            if (delay && cJSON_IsNumber(delay)) {
+                g_train_details.stops[idx].delay = (int)cJSON_GetNumberValue(delay);
+            }
+            
+            idx++;
+        }
+        g_train_details.stop_count = idx;
+    }
+    
+    // 1. Try to get capacity from the main connection object
+    cJSON *cap1 = cJSON_GetObjectItem(connection, "capacity1st");
+    cJSON *cap2 = cJSON_GetObjectItem(connection, "capacity2nd");
+    
+    if (cap1) {
+        int c = 0;
+        if (cJSON_IsNumber(cap1)) c = (int)cJSON_GetNumberValue(cap1);
+        else if (cJSON_IsString(cap1)) c = atoi(cJSON_GetStringValue(cap1));
+        
+        if (c==1) strcpy(g_train_details.capacity_1st, "Low");
+        else if (c==2) strcpy(g_train_details.capacity_1st, "Med");
+        else if (c==3) strcpy(g_train_details.capacity_1st, "High");
+    }
+    
+    if (cap2) {
+        int c = 0;
+        if (cJSON_IsNumber(cap2)) c = (int)cJSON_GetNumberValue(cap2);
+        else if (cJSON_IsString(cap2)) c = atoi(cJSON_GetStringValue(cap2));
+        
+        if (c==1) strcpy(g_train_details.capacity_2nd, "Low");
+        else if (c==2) strcpy(g_train_details.capacity_2nd, "Med");
+        else if (c==3) strcpy(g_train_details.capacity_2nd, "High");
+    }
+
+    // 2. If not found, check stops in passList (fallback)
+    if ((!g_train_details.capacity_1st[0] || !g_train_details.capacity_2nd[0]) && 
+        passList && cJSON_IsArray(passList)) {
+        cJSON *stop = NULL;
+        cJSON_ArrayForEach(stop, passList) {
+             cJSON *prognosis = cJSON_GetObjectItem(stop, "prognosis");
+             cJSON *cap1 = prognosis ? cJSON_GetObjectItem(prognosis, "capacity1st") : cJSON_GetObjectItem(stop, "capacity1st");
+             cJSON *cap2 = prognosis ? cJSON_GetObjectItem(prognosis, "capacity2nd") : cJSON_GetObjectItem(stop, "capacity2nd");
+             
+             if (cap1) {
+                 int c = 0;
+                 if (cJSON_IsNumber(cap1)) c = (int)cJSON_GetNumberValue(cap1);
+                 else if (cJSON_IsString(cap1)) c = atoi(cJSON_GetStringValue(cap1));
+                 
+                 if (c==1) strcpy(g_train_details.capacity_1st, "Low");
+                 else if (c==2) strcpy(g_train_details.capacity_1st, "Medium");
+                 else if (c==3) strcpy(g_train_details.capacity_1st, "High");
+             }
+             
+             if (cap2) {
+                 int c = 0;
+                 if (cJSON_IsNumber(cap2)) c = (int)cJSON_GetNumberValue(cap2);
+                 else if (cJSON_IsString(cap2)) c = atoi(cJSON_GetStringValue(cap2));
+                 
+                 if (c==1) strcpy(g_train_details.capacity_2nd, "Low");
+                 else if (c==2) strcpy(g_train_details.capacity_2nd, "Medium");
+                 else if (c==3) strcpy(g_train_details.capacity_2nd, "High");
+             }
+             
+             if (g_train_details.capacity_1st[0] || g_train_details.capacity_2nd[0]) break; 
+        }
+    }
+    
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/**
+ * @brief Simple URL encoder
+ */
+static void url_encode(const char *src, char *dst, size_t dst_len) {
+    static const char *hex = "0123456789ABCDEF";
+    size_t pos = 0;
+    while (*src && pos < dst_len - 1) {
+        if ((*src >= 'a' && *src <= 'z') ||
+            (*src >= 'A' && *src <= 'Z') ||
+            (*src >= '0' && *src <= '9') ||
+            *src == '-' || *src == '_' || *src == '.' || *src == '~') {
+            dst[pos++] = *src;
+        } else {
+            if (pos + 3 >= dst_len) break;
+            dst[pos++] = '%';
+            dst[pos++] = hex[(*src >> 4) & 0x0F];
+            dst[pos++] = hex[*src & 0x0F];
+        }
+        src++;
+    }
+    dst[pos] = '\0';
+}
+
+/**
+ * @brief Task to fetch journey details using connections search
+ */
+static void fetch_details_task(void *arg)
+{
+    char *journey_name = (char *)arg;
+    ESP_LOGI(TAG, "Fetching details for: %s", journey_name);
+    
+    // Find the train in our current list to get 'to' and 'departure' time
+    char destination[64] = {0};
+    time_t departure_time = 0;
+    
+    for (int i = 0; i < g_train_data.count; i++) {
+        if (strcmp(g_train_data.departures[i].journey_name, journey_name) == 0) {
+            strncpy(destination, g_train_data.departures[i].destination, sizeof(destination)-1);
+            departure_time = g_train_data.departures[i].departure_timestamp;
+            break;
+        }
+    }
+    
+    if (!destination[0] || departure_time == 0) {
+        ESP_LOGE(TAG, "Could not find train '%s' in current list", journey_name);
+        g_train_details.error = true;
+        strcpy(g_train_details.error_msg, "Train not found");
+        free(journey_name);
+        g_details_refresh_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Encode destination
+    char encoded_dest[256];
+    url_encode(destination, encoded_dest, sizeof(encoded_dest));
+    
+    // Encode from station
+    char encoded_from[256];
+    url_encode(g_train_station_name, encoded_from, sizeof(encoded_from));
+    
+    // Format date and time
+    struct tm tm_info;
+    localtime_r(&departure_time, &tm_info);
+    char date_str[16]; // YYYY-MM-DD
+    char time_str[16]; // HH:MM
+    strftime(date_str, sizeof(date_str), "%Y-%m-%d", &tm_info);
+    strftime(time_str, sizeof(time_str), "%H:%M", &tm_info);
+    
+    char url[512];
+    // Use connections endpoint to find the exact train run
+    snprintf(url, sizeof(url), "%s/connections?from=%s&to=%s&date=%s&time=%s&limit=1", 
+             TRANSPORT_API_BASE, encoded_from, encoded_dest, date_str, time_str);
+    
+    ESP_LOGI(TAG, "URL: %s", url);
+    
+    char *response_buffer = (char*)malloc(100 * 1024); // 100KB buffer
+    if (!response_buffer) {
+        free(journey_name);
+        g_details_refresh_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    size_t len = 0;
+    esp_err_t err = network_manager_http_get(url, response_buffer, 100 * 1024, &len);
+    
+    if (err == ESP_OK && len > 0) {
+        if (len < 100 * 1024) response_buffer[len] = '\0';
+        
+        if (parse_journey_json(response_buffer) == ESP_OK) {
+             g_train_details.error = false;
+        } else {
+             g_train_details.error = true;
+             strcpy(g_train_details.error_msg, "Parse Error");
+        }
+    } else {
+        g_train_details.error = true;
+        strcpy(g_train_details.error_msg, "Network Error");
+    }
+    
+    g_train_details.loading = false;
+    
+    // Post event
+    extern esp_event_loop_handle_t view_event_handle;
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_TRAIN_DETAILS_UPDATE,
+                     &g_train_details, sizeof(g_train_details), portMAX_DELAY);
+    
+    free(response_buffer);
+    free(journey_name);
+    g_details_refresh_in_progress = false;
+    vTaskDelete(NULL);
+}
+
+/**
+ * @brief Parse journey details JSON (for bus)
+ */
+static esp_err_t parse_bus_journey_json(const char *json_str)
+{
+    if (!json_str) return ESP_FAIL;
+    
+    cJSON *root = cJSON_Parse(json_str);
+    if (!root) {
+        ESP_LOGE(TAG, "Failed to parse bus details JSON");
+        return ESP_FAIL;
+    }
+    
+    // Clear data first
+    memset(&g_bus_details, 0, sizeof(g_bus_details));
+    
+    // Check connections array
+    cJSON *connections = cJSON_GetObjectItem(root, "connections");
+    if (!connections || !cJSON_IsArray(connections)) {
+        ESP_LOGE(TAG, "No connections array in response");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Get first connection
+    cJSON *connection = cJSON_GetArrayItem(connections, 0);
+    if (!connection) {
+        ESP_LOGE(TAG, "No connection found");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Get sections
+    cJSON *sections = cJSON_GetObjectItem(connection, "sections");
+    if (!sections || !cJSON_IsArray(sections)) {
+        ESP_LOGE(TAG, "No sections in connection");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Find the first section with a journey
+    cJSON *journey = NULL;
+    cJSON *section = NULL;
+    cJSON_ArrayForEach(section, sections) {
+        journey = cJSON_GetObjectItem(section, "journey");
+        if (journey) break;
+    }
+    
+    if (!journey) {
+        ESP_LOGE(TAG, "No journey found in sections");
+        cJSON_Delete(root);
+        return ESP_FAIL;
+    }
+    
+    // Name
+    cJSON *name = cJSON_GetObjectItem(journey, "name");
+    if (name) strncpy(g_bus_details.name, cJSON_GetStringValue(name), sizeof(g_bus_details.name)-1);
+    
+    // Operator
+    cJSON *operator = cJSON_GetObjectItem(journey, "operator");
+    if (operator) strncpy(g_bus_details.operator, cJSON_GetStringValue(operator), sizeof(g_bus_details.operator)-1);
+    
+    // Stops (passList)
+    cJSON *passList = cJSON_GetObjectItem(journey, "passList");
+    if (passList && cJSON_IsArray(passList)) {
+        int idx = 0;
+        cJSON *stop = NULL;
+        cJSON_ArrayForEach(stop, passList) {
+            if (idx >= 30) break;
+            
+            cJSON *station = cJSON_GetObjectItem(stop, "station");
+            cJSON *st_name = station ? cJSON_GetObjectItem(station, "name") : NULL;
+            if (st_name) strncpy(g_bus_details.stops[idx].name, cJSON_GetStringValue(st_name), sizeof(g_bus_details.stops[idx].name)-1);
+            
+            cJSON *arr = cJSON_GetObjectItem(stop, "arrival");
+            if (arr && cJSON_GetStringValue(arr)) {
+                time_t t;
+                parse_departure_time(cJSON_GetStringValue(arr), &t);
+                struct tm tm;
+                localtime_r(&t, &tm);
+                snprintf(g_bus_details.stops[idx].arrival, 16, "%02d:%02d", tm.tm_hour, tm.tm_min);
+            }
+            
+            cJSON *dep = cJSON_GetObjectItem(stop, "departure");
+            if (dep && cJSON_GetStringValue(dep)) {
+                time_t t;
+                parse_departure_time(cJSON_GetStringValue(dep), &t);
+                struct tm tm;
+                localtime_r(&t, &tm);
+                snprintf(g_bus_details.stops[idx].departure, 16, "%02d:%02d", tm.tm_hour, tm.tm_min);
+            }
+            
+            cJSON *delay = cJSON_GetObjectItem(stop, "delay");
+            if (delay && cJSON_IsNumber(delay)) {
+                g_bus_details.stops[idx].delay = (int)cJSON_GetNumberValue(delay);
+            }
+            
+            idx++;
+        }
+        g_bus_details.stop_count = idx;
+    }
+    
+    // 1. Try to get capacity from the main connection object
+    cJSON *cap1 = cJSON_GetObjectItem(connection, "capacity1st");
+    cJSON *cap2 = cJSON_GetObjectItem(connection, "capacity2nd");
+    
+    if (cap1) {
+        int c = 0;
+        if (cJSON_IsNumber(cap1)) c = (int)cJSON_GetNumberValue(cap1);
+        else if (cJSON_IsString(cap1)) c = atoi(cJSON_GetStringValue(cap1));
+        
+        if (c==1) strcpy(g_bus_details.capacity_1st, "Low");
+        else if (c==2) strcpy(g_bus_details.capacity_1st, "Med");
+        else if (c==3) strcpy(g_bus_details.capacity_1st, "High");
+    }
+    
+    if (cap2) {
+        int c = 0;
+        if (cJSON_IsNumber(cap2)) c = (int)cJSON_GetNumberValue(cap2);
+        else if (cJSON_IsString(cap2)) c = atoi(cJSON_GetStringValue(cap2));
+        
+        if (c==1) strcpy(g_bus_details.capacity_2nd, "Low");
+        else if (c==2) strcpy(g_bus_details.capacity_2nd, "Med");
+        else if (c==3) strcpy(g_bus_details.capacity_2nd, "High");
+    }
+
+    // 2. Capacity usually null for buses but we check anyway in passList
+    if ((!g_bus_details.capacity_1st[0] || !g_bus_details.capacity_2nd[0]) &&
+        passList && cJSON_IsArray(passList)) {
+        cJSON *stop = NULL;
+        cJSON_ArrayForEach(stop, passList) {
+             cJSON *prognosis = cJSON_GetObjectItem(stop, "prognosis");
+             cJSON *cap1 = prognosis ? cJSON_GetObjectItem(prognosis, "capacity1st") : cJSON_GetObjectItem(stop, "capacity1st");
+             cJSON *cap2 = prognosis ? cJSON_GetObjectItem(prognosis, "capacity2nd") : cJSON_GetObjectItem(stop, "capacity2nd");
+             
+             if (cap1) {
+                 int c = 0;
+                 if (cJSON_IsNumber(cap1)) c = (int)cJSON_GetNumberValue(cap1);
+                 else if (cJSON_IsString(cap1)) c = atoi(cJSON_GetStringValue(cap1));
+                 
+                 if (c==1) strcpy(g_bus_details.capacity_1st, "Low");
+                 else if (c==2) strcpy(g_bus_details.capacity_1st, "Medium");
+                 else if (c==3) strcpy(g_bus_details.capacity_1st, "High");
+             }
+             
+             if (cap2) {
+                 int c = 0;
+                 if (cJSON_IsNumber(cap2)) c = (int)cJSON_GetNumberValue(cap2);
+                 else if (cJSON_IsString(cap2)) c = atoi(cJSON_GetStringValue(cap2));
+                 
+                 if (c==1) strcpy(g_bus_details.capacity_2nd, "Low");
+                 else if (c==2) strcpy(g_bus_details.capacity_2nd, "Medium");
+                 else if (c==3) strcpy(g_bus_details.capacity_2nd, "High");
+             }
+             
+             if (g_bus_details.capacity_1st[0] || g_bus_details.capacity_2nd[0]) break; 
+        }
+    }
+    
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/**
+ * @brief Task to fetch bus details
+ */
+static void fetch_bus_details_task(void *arg)
+{
+    char *journey_name = (char *)arg;
+    ESP_LOGI(TAG, "Fetching bus details for: %s", journey_name);
+    
+    // Find the bus in our current list to get 'to' and 'departure' time
+    char destination[64] = {0};
+    time_t departure_time = 0;
+    
+    for (int i = 0; i < g_bus_data.count; i++) {
+        if (strcmp(g_bus_data.departures[i].journey_name, journey_name) == 0) {
+            strncpy(destination, g_bus_data.departures[i].destination, sizeof(destination)-1);
+            departure_time = g_bus_data.departures[i].departure_timestamp;
+            break;
+        }
+    }
+    
+    if (!destination[0] || departure_time == 0) {
+        ESP_LOGE(TAG, "Could not find bus '%s' in current list", journey_name);
+        g_bus_details.error = true;
+        strcpy(g_bus_details.error_msg, "Bus not found");
+        free(journey_name);
+        g_details_refresh_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Encode destination
+    char encoded_dest[256];
+    url_encode(destination, encoded_dest, sizeof(encoded_dest));
+    
+    // Encode from station
+    char encoded_from[256];
+    url_encode(g_bus_stop_name, encoded_from, sizeof(encoded_from));
+    
+    // Format date and time
+    struct tm tm_info;
+    localtime_r(&departure_time, &tm_info);
+    char date_str[16]; // YYYY-MM-DD
+    char time_str[16]; // HH:MM
+    strftime(date_str, sizeof(date_str), "%Y-%m-%d", &tm_info);
+    strftime(time_str, sizeof(time_str), "%H:%M", &tm_info);
+    
+    char url[512];
+    snprintf(url, sizeof(url), "%s/connections?from=%s&to=%s&date=%s&time=%s&limit=1", 
+             TRANSPORT_API_BASE, encoded_from, encoded_dest, date_str, time_str);
+    
+    ESP_LOGI(TAG, "URL: %s", url);
+    
+    char *response_buffer = (char*)malloc(100 * 1024);
+    if (!response_buffer) {
+        free(journey_name);
+        g_details_refresh_in_progress = false;
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    size_t len = 0;
+    esp_err_t err = network_manager_http_get(url, response_buffer, 100 * 1024, &len);
+    
+    if (err == ESP_OK && len > 0) {
+        if (len < 100 * 1024) response_buffer[len] = '\0';
+        
+        if (parse_bus_journey_json(response_buffer) == ESP_OK) {
+             g_bus_details.error = false;
+        } else {
+             g_bus_details.error = true;
+             strcpy(g_bus_details.error_msg, "Parse Error");
+        }
+    } else {
+        g_bus_details.error = true;
+        strcpy(g_bus_details.error_msg, "Network Error");
+    }
+    
+    g_bus_details.loading = false;
+    
+    extern esp_event_loop_handle_t view_event_handle;
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_BUS_DETAILS_UPDATE,
+                     &g_bus_details, sizeof(g_bus_details), portMAX_DELAY);
+    
+    free(response_buffer);
+    free(journey_name);
+    g_details_refresh_in_progress = false;
+    vTaskDelete(NULL);
 }
 
 /**
@@ -918,6 +1466,72 @@ esp_err_t transport_data_get_train_station(struct view_data_train_station *data)
     if (!data) return ESP_ERR_INVALID_ARG;
     memcpy(data, &g_train_data, sizeof(*data));
     return ESP_OK;
+}
+
+esp_err_t transport_data_fetch_train_details(const char *journey_name)
+{
+    if (!journey_name) return ESP_ERR_INVALID_ARG;
+    if (g_details_refresh_in_progress) return ESP_ERR_INVALID_STATE;
+    
+    g_details_refresh_in_progress = true;
+    
+    // Copy name to heap to pass to task
+    char *name_copy = strdup(journey_name);
+    if (!name_copy) {
+        g_details_refresh_in_progress = false;
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Set loading state
+    g_train_details.loading = true;
+    g_train_details.error = false;
+    
+    xTaskCreate(fetch_details_task, "fetch_details", 8192, name_copy, 5, NULL);
+    return ESP_OK;
+}
+
+esp_err_t transport_data_fetch_bus_details(const char *journey_name)
+{
+    if (!journey_name) return ESP_ERR_INVALID_ARG;
+    if (g_details_refresh_in_progress) return ESP_ERR_INVALID_STATE;
+    
+    g_details_refresh_in_progress = true;
+    
+    char *name_copy = strdup(journey_name);
+    if (!name_copy) {
+        g_details_refresh_in_progress = false;
+        return ESP_ERR_NO_MEM;
+    }
+    
+    g_bus_details.loading = true;
+    g_bus_details.error = false;
+    
+    xTaskCreate(fetch_bus_details_task, "fetch_bus_det", 8192, name_copy, 5, NULL);
+    return ESP_OK;
+}
+
+esp_err_t transport_data_get_bus_details(struct view_data_bus_details *data)
+{
+    if (!data) return ESP_ERR_INVALID_ARG;
+    memcpy(data, &g_bus_details, sizeof(*data));
+    return ESP_OK;
+}
+
+void transport_data_clear_bus_details(void)
+{
+    memset(&g_bus_details, 0, sizeof(g_bus_details));
+}
+
+esp_err_t transport_data_get_train_details(struct view_data_train_details *data)
+{
+    if (!data) return ESP_ERR_INVALID_ARG;
+    memcpy(data, &g_train_details, sizeof(*data));
+    return ESP_OK;
+}
+
+void transport_data_clear_train_details(void)
+{
+    memset(&g_train_details, 0, sizeof(g_train_details));
 }
 
 bool transport_data_is_day_mode(void)

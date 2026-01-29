@@ -110,6 +110,44 @@ esp_err_t transport_data_get_bus_countdown(struct view_data_bus_countdown *data)
 esp_err_t transport_data_get_train_station(struct view_data_train_station *data);
 
 /**
+ * @brief Fetch details for a specific train journey
+ * @param journey_name Unique name/ID of the train (e.g. "S12 19055")
+ * @return ESP_OK on success
+ */
+esp_err_t transport_data_fetch_train_details(const char *journey_name);
+
+/**
+ * @brief Fetch details for a specific bus journey
+ * @param journey_name Unique name/ID of the bus
+ * @return ESP_OK on success
+ */
+esp_err_t transport_data_fetch_bus_details(const char *journey_name);
+
+/**
+ * @brief Get train details data
+ * @param data Output structure
+ * @return ESP_OK on success
+ */
+esp_err_t transport_data_get_train_details(struct view_data_train_details *data);
+
+/**
+ * @brief Get bus details data
+ * @param data Output structure
+ * @return ESP_OK on success
+ */
+esp_err_t transport_data_get_bus_details(struct view_data_bus_details *data);
+
+/**
+ * @brief Clear train details data (free memory/reset)
+ */
+void transport_data_clear_train_details(void);
+
+/**
+ * @brief Clear bus details data (free memory/reset)
+ */
+void transport_data_clear_bus_details(void);
+
+/**
  * @brief Check if current time is in day mode
  * @return true if day mode, false if night mode
  */

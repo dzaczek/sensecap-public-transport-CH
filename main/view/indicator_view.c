@@ -85,6 +85,23 @@ static lv_obj_t *station_selection_cont = NULL;
 static lv_obj_t *train_view_cont = NULL;
 static lv_obj_t *loading_cont = NULL;
 
+// Train details screen widgets
+static lv_obj_t *train_details_screen = NULL;
+static lv_obj_t *train_details_loading = NULL;
+static lv_obj_t *train_details_view = NULL;
+static lv_obj_t *train_details_list = NULL;
+static lv_obj_t *train_details_title = NULL;
+static lv_obj_t *train_details_cap1 = NULL;
+static lv_obj_t *train_details_cap2 = NULL;
+static lv_obj_t *train_details_close_btn = NULL;
+
+// Bus details screen widgets
+static lv_obj_t *bus_details_screen = NULL;
+static lv_obj_t *bus_details_loading = NULL;
+static lv_obj_t *bus_details_view = NULL;
+static lv_obj_t *bus_details_list = NULL;
+static lv_obj_t *bus_details_title = NULL;
+static lv_obj_t *bus_details_close_btn = NULL;
 
 /*  – ID z transport.opendata.ch */
 static const station_t predefined_stations[] = {
@@ -118,10 +135,14 @@ static char current_wifi_ssid[32];
 // Forward declarations
 static void update_bus_screen(const struct view_data_bus_countdown *data);
 static void update_train_screen(const struct view_data_train_station *data);
+static void update_train_details_screen(const struct view_data_train_details *data);
+static void update_bus_details_screen(const struct view_data_bus_details *data);
 static void update_settings_screen(const struct view_data_settings *data);
 static void update_wifi_list(const struct view_data_wifi_list *list);
 static void create_bus_screen(lv_obj_t *parent);
+static void create_bus_details_screen(lv_obj_t *parent);
 static void create_train_screen(lv_obj_t *parent);
+static void create_train_details_screen(lv_obj_t *parent);
 static void create_settings_screen(lv_obj_t *parent);
 static void create_wifi_screen(lv_obj_t *parent);
 static void create_wifi_password_screen(lv_obj_t *parent);
@@ -129,8 +150,14 @@ static void refresh_btn_cb(lv_event_t *e);
 static void bus_refresh_btn_cb(lv_event_t *e);
 static void bus_back_btn_cb(lv_event_t *e);
 static void bus_stop_select_cb(lv_event_t *e);
+static void bus_list_item_cb(lv_event_t *e);
+static void bus_list_item_delete_cb(lv_event_t *e);
+static void bus_details_close_btn_cb(lv_event_t *e);
 static void train_refresh_btn_cb(lv_event_t *e);
 static void train_back_btn_cb(lv_event_t *e);
+static void train_list_item_cb(lv_event_t *e);
+static void train_list_item_delete_cb(lv_event_t *e);
+static void details_close_btn_cb(lv_event_t *e);
 static void station_select_cb(lv_event_t *e);
 static void prev_btn_cb(lv_event_t *e);
 static void next_btn_cb(lv_event_t *e);
@@ -258,6 +285,53 @@ static void next_btn_cb(lv_event_t *e)
     }
     
     update_bus_screen(&data);
+}
+
+/**
+ * @brief Bus list item click callback
+ */
+static void bus_list_item_cb(lv_event_t *e)
+{
+    const char *journey_name = (const char *)lv_event_get_user_data(e);
+    if (!journey_name) return;
+    
+    ESP_LOGI(TAG, "Requesting bus details for: %s", journey_name);
+    
+    // Show details screen (loading)
+    lv_obj_clear_flag(bus_details_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(bus_details_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(bus_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_BUS_DETAILS_REQ, 
+                     journey_name, strlen(journey_name) + 1, portMAX_DELAY);
+}
+
+/**
+ * @brief Bus list item delete callback
+ */
+static void bus_list_item_delete_cb(lv_event_t *e)
+{
+    char *journey_name = (char *)lv_event_get_user_data(e);
+    if (journey_name) {
+        lv_mem_free(journey_name);
+    }
+}
+
+/**
+ * @brief Bus details close button callback
+ */
+static void bus_details_close_btn_cb(lv_event_t *e)
+{
+    // Hide details screen
+    lv_obj_add_flag(bus_details_screen, LV_OBJ_FLAG_HIDDEN);
+    
+    // Clear data in model
+    transport_data_clear_bus_details();
+    
+    // Clear list
+    if (bus_details_list) {
+        lv_obj_clean(bus_details_list);
+    }
 }
 
 /**
@@ -445,14 +519,23 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
             }
             
             // Create container for each departure item - simplified, no border
-            lv_obj_t *item = lv_obj_create(bus_list);
+            lv_obj_t *item = lv_btn_create(bus_list); // Changed to btn
             lv_obj_set_width(item, LV_PCT(100));
             lv_obj_set_height(item, 55);
             lv_obj_set_style_pad_all(item, 3, 0);
             lv_obj_set_style_pad_gap(item, 8, 0);
             lv_obj_set_style_bg_color(item, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT);
             lv_obj_set_style_border_width(item, 0, LV_PART_MAIN | LV_STATE_DEFAULT);  // No border
+            lv_obj_set_style_shadow_width(item, 0, 0); // No shadow for button
             lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+            
+            // Add click event
+            char *j_name = lv_mem_alloc(strlen(data->departures[i].journey_name) + 1);
+            if (j_name) {
+                strcpy(j_name, data->departures[i].journey_name);
+                lv_obj_add_event_cb(item, bus_list_item_cb, LV_EVENT_CLICKED, j_name);
+                lv_obj_add_event_cb(item, bus_list_item_delete_cb, LV_EVENT_DELETE, j_name);
+            }
             
             // Line number with colored background
             lv_obj_t *line_container = lv_obj_create(item);
@@ -542,6 +625,185 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 }
 
 /**
+ * @brief Update bus details screen
+ */
+static void update_bus_details_screen(const struct view_data_bus_details *data)
+{
+    if (!bus_details_screen || !data) return;
+    
+    lv_port_sem_take();
+    
+    lv_obj_add_flag(bus_details_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(bus_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    // Title
+    char title[64];
+    snprintf(title, sizeof(title), "%s - %s", data->name, data->operator);
+    lv_label_set_text(bus_details_title, title);
+    
+    // List
+    lv_obj_clean(bus_details_list);
+    
+    for (int i = 0; i < data->stop_count; i++) {
+        lv_obj_t *item = lv_obj_create(bus_details_list);
+        lv_obj_set_size(item, LV_PCT(100), 30);
+        lv_obj_set_style_bg_opa(item, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_pad_all(item, 0, 0);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // Time
+        lv_obj_t *lbl_time = lv_label_create(item);
+        if (data->stops[i].departure[0]) {
+            lv_label_set_text(lbl_time, data->stops[i].departure);
+        } else {
+            lv_label_set_text(lbl_time, data->stops[i].arrival); // Last stop
+        }
+        lv_obj_set_style_text_color(lbl_time, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_time, &arimo_16, 0);
+        lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 5, 0);
+        
+        // Name
+        lv_obj_t *lbl_name = lv_label_create(item);
+        lv_label_set_text(lbl_name, data->stops[i].name);
+        lv_obj_set_style_text_color(lbl_name, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_name, &arimo_16, 0);
+        lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 60, 0);
+        
+        // Delay (if any)
+        if (data->stops[i].delay > 0) {
+            lv_obj_t *lbl_delay = lv_label_create(item);
+            lv_label_set_text_fmt(lbl_delay, "+%d'", data->stops[i].delay);
+            lv_obj_set_style_text_color(lbl_delay, lv_color_hex(0xFFD700), 0);
+            lv_obj_align(lbl_delay, LV_ALIGN_RIGHT_MID, -5, 0);
+        }
+    }
+    
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Create bus details screen
+ */
+static void create_bus_details_screen(lv_obj_t *parent)
+{
+    // It's a modal over the parent (tab)
+    bus_details_screen = lv_obj_create(parent);
+    lv_obj_set_size(bus_details_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(bus_details_screen, lv_color_hex(0x101010), 0); 
+    lv_obj_set_style_bg_opa(bus_details_screen, LV_OPA_COVER, 0); 
+    lv_obj_set_style_border_width(bus_details_screen, 2, 0);
+    lv_obj_set_style_border_color(bus_details_screen, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_pad_all(bus_details_screen, 0, 0);
+    lv_obj_add_flag(bus_details_screen, LV_OBJ_FLAG_HIDDEN); 
+    
+    // Header
+    lv_obj_t *header = lv_obj_create(bus_details_screen);
+    lv_obj_set_size(header, LV_PCT(100), 60); 
+    lv_obj_set_style_bg_color(header, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+    
+    bus_details_close_btn = lv_btn_create(header);
+    lv_obj_set_size(bus_details_close_btn, 50, 50); 
+    lv_obj_align(bus_details_close_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(bus_details_close_btn, lv_color_hex(0xFF0000), 0); 
+    lv_obj_add_event_cb(bus_details_close_btn, bus_details_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_x = lv_label_create(bus_details_close_btn);
+    lv_label_set_text(lbl_x, LV_SYMBOL_CLOSE);
+    lv_obj_center(lbl_x);
+    
+    bus_details_title = lv_label_create(header);
+    lv_label_set_text(bus_details_title, "Details");
+    lv_obj_set_style_text_font(bus_details_title, &arimo_20, 0);
+    lv_obj_set_width(bus_details_title, LV_PCT(75)); 
+    lv_label_set_long_mode(bus_details_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_align(bus_details_title, LV_ALIGN_LEFT_MID, 10, 0);
+    
+    // Loading
+    bus_details_loading = lv_obj_create(bus_details_screen);
+    lv_obj_set_size(bus_details_loading, LV_PCT(100), LV_PCT(80));
+    lv_obj_set_y(bus_details_loading, 60);
+    lv_obj_set_style_bg_opa(bus_details_loading, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bus_details_loading, 0, 0);
+    
+    lv_obj_t *load_lbl = lv_label_create(bus_details_loading);
+    lv_label_set_text(load_lbl, "Loading details...");
+    lv_obj_set_style_text_font(load_lbl, &arimo_20, 0);
+    lv_obj_center(load_lbl);
+    
+    // Content View
+    bus_details_view = lv_obj_create(bus_details_screen);
+    lv_obj_set_size(bus_details_view, LV_PCT(100), LV_PCT(85));
+    lv_obj_set_y(bus_details_view, 60);
+    lv_obj_set_style_bg_opa(bus_details_view, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(bus_details_view, 0, 0);
+    lv_obj_set_style_pad_all(bus_details_view, 0, 0);
+    lv_obj_add_flag(bus_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    // List of stops
+    bus_details_list = lv_obj_create(bus_details_view);
+    lv_obj_set_size(bus_details_list, LV_PCT(100), LV_PCT(100)); // Full height
+    lv_obj_align(bus_details_list, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_opa(bus_details_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_flex_flow(bus_details_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(bus_details_list, 2, 0);
+}
+
+/**
+ * @brief Train list item click callback
+ */
+static void train_list_item_cb(lv_event_t *e)
+{
+    const char *journey_name = (const char *)lv_event_get_user_data(e);
+    if (!journey_name) return;
+    
+    ESP_LOGI(TAG, "Requesting details for: %s", journey_name);
+    
+    // Show details screen (loading)
+    lv_obj_clear_flag(train_details_screen, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(train_details_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(train_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    // Request details fetch
+    // Note: We need to pass a copy because event data is temporary, but here we pass char* to the event
+    // The event handler will treat it as void* data.
+    // However, event_post copies data by value if size > 0.
+    // So we pass the pointer content (the string) in the buffer.
+    
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_TRAIN_DETAILS_REQ, 
+                     journey_name, strlen(journey_name) + 1, portMAX_DELAY);
+}
+
+/**
+ * @brief Train list item delete callback to free memory
+ */
+static void train_list_item_delete_cb(lv_event_t *e)
+{
+    char *journey_name = (char *)lv_event_get_user_data(e);
+    if (journey_name) {
+        lv_mem_free(journey_name);
+    }
+}
+
+/**
+ * @brief Details close button callback
+ */
+static void details_close_btn_cb(lv_event_t *e)
+{
+    // Hide details screen
+    lv_obj_add_flag(train_details_screen, LV_OBJ_FLAG_HIDDEN);
+    
+    // Clear data in model
+    transport_data_clear_train_details();
+    
+    // Clear list
+    if (train_details_list) {
+        lv_obj_clean(train_details_list);
+    }
+}
+
+/**
  * @brief Update train station screen
  */
 static void update_train_screen(const struct view_data_train_station *data)
@@ -569,8 +831,8 @@ static void update_train_screen(const struct view_data_train_station *data)
         for (int i = 0; i < data->count && i < MAX_DEPARTURES; i++) {
             if (!data->departures[i].valid) continue;
             
-            // Row Item
-            lv_obj_t *item = lv_obj_create(train_list);
+            // Row Item - Clickable!
+            lv_obj_t *item = lv_btn_create(train_list); // Changed from obj to btn
             lv_obj_set_size(item, LV_PCT(100), 40);
             lv_obj_set_style_bg_opa(item, LV_OPA_TRANSP, 0);
             lv_obj_set_style_border_width(item, 0, 0);
@@ -578,7 +840,16 @@ static void update_train_screen(const struct view_data_train_station *data)
             lv_obj_set_style_border_color(item, lv_color_hex(0x404040), 0);
             lv_obj_set_style_border_width(item, 1, 0); // Separator line
             lv_obj_set_style_pad_all(item, 0, 0);
+            lv_obj_set_style_shadow_width(item, 0, 0); // No shadow for button
             lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+            
+            // Allocate memory for journey name to pass as user data
+            char *j_name = lv_mem_alloc(strlen(data->departures[i].journey_name) + 1);
+            if (j_name) {
+                strcpy(j_name, data->departures[i].journey_name);
+                lv_obj_add_event_cb(item, train_list_item_cb, LV_EVENT_CLICKED, j_name);
+                lv_obj_add_event_cb(item, train_list_item_delete_cb, LV_EVENT_DELETE, j_name);
+            }
             
             // 1. Train Badge (Line)
             lv_obj_t *badge = lv_obj_create(item);
@@ -1233,6 +1504,146 @@ static void create_wifi_password_screen(lv_obj_t *parent)
 }
 
 /**
+ * @brief Update train details screen
+ */
+static void update_train_details_screen(const struct view_data_train_details *data)
+{
+    if (!train_details_screen || !data) return;
+    
+    lv_port_sem_take();
+    
+    lv_obj_add_flag(train_details_loading, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(train_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    // Title
+    char title[64];
+    snprintf(title, sizeof(title), "%s - %s", data->name, data->operator);
+    lv_label_set_text(train_details_title, title);
+    
+    // Capacity
+    char cap[64];
+    snprintf(cap, sizeof(cap), "1st: %s  2nd: %s", 
+             data->capacity_1st[0] ? data->capacity_1st : "-",
+             data->capacity_2nd[0] ? data->capacity_2nd : "-");
+    lv_label_set_text(train_details_cap1, cap);
+    
+    // List
+    lv_obj_clean(train_details_list);
+    
+    for (int i = 0; i < data->stop_count; i++) {
+        lv_obj_t *item = lv_obj_create(train_details_list);
+        lv_obj_set_size(item, LV_PCT(100), 30);
+        lv_obj_set_style_bg_opa(item, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_pad_all(item, 0, 0);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+        
+        // Time
+        lv_obj_t *lbl_time = lv_label_create(item);
+        if (data->stops[i].departure[0]) {
+            lv_label_set_text(lbl_time, data->stops[i].departure);
+        } else {
+            lv_label_set_text(lbl_time, data->stops[i].arrival); // Last stop
+        }
+        lv_obj_set_style_text_color(lbl_time, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_time, &arimo_16, 0);
+        lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 5, 0);
+        
+        // Name
+        lv_obj_t *lbl_name = lv_label_create(item);
+        lv_label_set_text(lbl_name, data->stops[i].name);
+        lv_obj_set_style_text_color(lbl_name, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_name, &arimo_16, 0);
+        lv_obj_align(lbl_name, LV_ALIGN_LEFT_MID, 60, 0);
+        
+        // Delay (if any)
+        if (data->stops[i].delay > 0) {
+            lv_obj_t *lbl_delay = lv_label_create(item);
+            lv_label_set_text_fmt(lbl_delay, "+%d'", data->stops[i].delay);
+            lv_obj_set_style_text_color(lbl_delay, lv_color_hex(0xFFD700), 0);
+            lv_obj_align(lbl_delay, LV_ALIGN_RIGHT_MID, -5, 0);
+        }
+    }
+    
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Create train details screen
+ */
+static void create_train_details_screen(lv_obj_t *parent)
+{
+    // It's a modal over the parent (tab)
+    train_details_screen = lv_obj_create(parent);
+    lv_obj_set_size(train_details_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(train_details_screen, lv_color_hex(0x101010), 0); // Slightly lighter black
+    lv_obj_set_style_bg_opa(train_details_screen, LV_OPA_COVER, 0); // Opaque
+    lv_obj_set_style_border_width(train_details_screen, 2, 0);
+    lv_obj_set_style_border_color(train_details_screen, lv_color_hex(0xFFFFFF), 0); // White border to make it pop
+    lv_obj_set_style_pad_all(train_details_screen, 0, 0);
+    lv_obj_add_flag(train_details_screen, LV_OBJ_FLAG_HIDDEN); // Hidden by default
+    
+    // Header
+    lv_obj_t *header = lv_obj_create(train_details_screen);
+    lv_obj_set_size(header, LV_PCT(100), 60); // Taller header
+    lv_obj_set_style_bg_color(header, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+    
+    train_details_close_btn = lv_btn_create(header);
+    lv_obj_set_size(train_details_close_btn, 50, 50); // Bigger close button
+    lv_obj_align(train_details_close_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(train_details_close_btn, lv_color_hex(0xFF0000), 0); // Red button
+    lv_obj_add_event_cb(train_details_close_btn, details_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_x = lv_label_create(train_details_close_btn);
+    lv_label_set_text(lbl_x, LV_SYMBOL_CLOSE);
+    lv_obj_center(lbl_x);
+    
+    train_details_title = lv_label_create(header);
+    lv_label_set_text(train_details_title, "Details");
+    lv_obj_set_style_text_font(train_details_title, &arimo_20, 0);
+    lv_obj_set_width(train_details_title, LV_PCT(75)); // Limit width to avoid overlap with close button
+    lv_label_set_long_mode(train_details_title, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    lv_obj_align(train_details_title, LV_ALIGN_LEFT_MID, 10, 0);
+    
+    // Loading
+    train_details_loading = lv_obj_create(train_details_screen);
+    lv_obj_set_size(train_details_loading, LV_PCT(100), LV_PCT(80));
+    lv_obj_set_y(train_details_loading, 60);
+    lv_obj_set_style_bg_opa(train_details_loading, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(train_details_loading, 0, 0);
+    
+    lv_obj_t *load_lbl = lv_label_create(train_details_loading);
+    lv_label_set_text(load_lbl, "Loading details...");
+    lv_obj_set_style_text_font(load_lbl, &arimo_20, 0);
+    lv_obj_center(load_lbl);
+    
+    // Content View
+    train_details_view = lv_obj_create(train_details_screen);
+    lv_obj_set_size(train_details_view, LV_PCT(100), LV_PCT(85));
+    lv_obj_set_y(train_details_view, 60);
+    lv_obj_set_style_bg_opa(train_details_view, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(train_details_view, 0, 0);
+    lv_obj_set_style_pad_all(train_details_view, 0, 0);
+    lv_obj_add_flag(train_details_view, LV_OBJ_FLAG_HIDDEN);
+    
+    // Capacity info
+    train_details_cap1 = lv_label_create(train_details_view);
+    lv_label_set_text(train_details_cap1, "Capacity: -");
+    lv_obj_set_style_text_font(train_details_cap1, &arimo_16, 0);
+    lv_obj_set_style_text_color(train_details_cap1, lv_color_hex(0xCCCCCC), 0);
+    lv_obj_align(train_details_cap1, LV_ALIGN_TOP_LEFT, 10, 5);
+    
+    // List of stops
+    train_details_list = lv_obj_create(train_details_view);
+    lv_obj_set_size(train_details_list, LV_PCT(100), LV_PCT(85));
+    lv_obj_align(train_details_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(train_details_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_flex_flow(train_details_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(train_details_list, 2, 0);
+}
+
+/**
  * @brief Create settings screen
  */
 static void create_settings_screen(lv_obj_t *parent)
@@ -1338,6 +1749,29 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             update_train_screen(data);
             break;
         }
+        case VIEW_EVENT_TRAIN_DETAILS_UPDATE: {
+            const struct view_data_train_details *data = 
+                (const struct view_data_train_details *)event_data;
+            update_train_details_screen(data);
+            break;
+        }
+        case VIEW_EVENT_TRAIN_DETAILS_REQ: {
+            // event_data is the journey name string (char*)
+            const char *journey_name = (const char*)event_data;
+            transport_data_fetch_train_details(journey_name);
+            break;
+        }
+        case VIEW_EVENT_BUS_DETAILS_UPDATE: {
+            const struct view_data_bus_details *data = 
+                (const struct view_data_bus_details *)event_data;
+            update_bus_details_screen(data);
+            break;
+        }
+        case VIEW_EVENT_BUS_DETAILS_REQ: {
+            const char *journey_name = (const char*)event_data;
+            transport_data_fetch_bus_details(journey_name);
+            break;
+        }
         case VIEW_EVENT_SETTINGS_UPDATE: {
             const struct view_data_settings *data = 
                 (const struct view_data_settings *)event_data;
@@ -1413,7 +1847,10 @@ int indicator_view_init(void)
     
     // Create screens
     create_bus_screen(bus_tab);
+    create_bus_details_screen(bus_tab);
     create_train_screen(train_tab);
+    // Create details screen as child of train tab, so it overlays the train screen
+    create_train_details_screen(train_tab);
     create_settings_screen(settings_tab);
     
     // Register event handler
@@ -1422,6 +1859,18 @@ int indicator_view_init(void)
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_TRAIN_STATION_UPDATE,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_TRAIN_DETAILS_UPDATE,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_TRAIN_DETAILS_REQ,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_BUS_DETAILS_UPDATE,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_BUS_DETAILS_REQ,
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_SETTINGS_UPDATE,
