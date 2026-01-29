@@ -55,7 +55,15 @@ static void __time_cfg_print(struct view_data_time_cfg *p_cfg )
 
 static void __time_sync_notification_cb(struct timeval *tv)
 {
-    ESP_LOGI("ntp", "Notification of a time synchronization event");
+    time_t now;
+    struct tm timeinfo;
+    char strftime_buf[64];
+    
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    strftime(strftime_buf, sizeof(strftime_buf), "%Y-%m-%d %H:%M:%S %Z", &timeinfo);
+    
+    ESP_LOGI("ntp", "Time synchronized successfully: %s", strftime_buf);
     
     // Ensure timezone is set correctly after sync
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
@@ -162,18 +170,13 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             break;
         }
         case VIEW_EVENT_WIFI_ST: {
-            static bool fist = true;
             ESP_LOGI(TAG, "event: VIEW_EVENT_WIFI_ST");
             struct view_data_wifi_st *p_st = ( struct view_data_wifi_st *)event_data;
             if( p_st->is_network) {
-                
-                if( !fist) {
-                    break;
-                }
-                fist = false;
                 struct view_data_time_cfg cfg;
                 __time_cfg_get(&cfg);
                 if( cfg.auto_update ) {
+                    ESP_LOGI(TAG, "WiFi network available, restarting NTP sync");
                     __time_sync_stop();
                     __time_sync_enable();
                 }
@@ -230,9 +233,13 @@ int indicator_time_init(void)
     __time_cfg_restore();
 
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_setservername(1, "cn.ntp.org.cn");
+    // Use Swiss and European NTP servers for better connectivity in Switzerland
+    sntp_setservername(0, "ch.pool.ntp.org");       // Swiss NTP pool
+    sntp_setservername(1, "europe.pool.ntp.org");   // European NTP pool
+    sntp_setservername(2, "pool.ntp.org");          // Global NTP pool
     sntp_set_time_sync_notification_cb(__time_sync_notification_cb);
+    
+    ESP_LOGI(TAG, "NTP servers configured: ch.pool.ntp.org, europe.pool.ntp.org, pool.ntp.org");
     
     struct view_data_time_cfg cfg;
     __time_cfg_get(&cfg);

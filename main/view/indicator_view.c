@@ -6,6 +6,7 @@
 #include "network_manager.h"
 #include "transport_data.h"
 #include "indicator_time.h"  // For time updates
+#include "sbb_clock.h"
 #include "config.h"
 #include <string.h>
 #include <time.h>
@@ -20,6 +21,8 @@ static const char *TAG = "view";
 
 // Screen objects
 static lv_obj_t *tabview = NULL;
+static lv_obj_t *clock_screen = NULL;  /* first tab: SBB clock */
+static sbb_clock_t clock_widget = NULL;
 static lv_obj_t *bus_screen = NULL;
 static lv_obj_t *train_screen = NULL;
 static lv_obj_t *settings_screen = NULL;
@@ -236,7 +239,7 @@ static void tabview_event_cb(lv_event_t *e)
     ESP_LOGI(TAG, "Tab changed to %d", id);
     
     // Notify transport model about active screen
-    // 0 = Bus, 1 = Train, 2 = Settings
+    // 0 = Clock, 1 = Bus, 2 = Train, 3 = Settings
     transport_data_notify_screen_change(id);
 }
 
@@ -1977,12 +1980,16 @@ static void create_settings_screen(lv_obj_t *parent)
 }
 
 /**
- * @brief Time update handler for footer
+ * @brief Time update handler for footer and SBB clock (NTP synced -> 10s animation)
  */
 static void time_update_handler(void* handler_args, esp_event_base_t base, 
                                 int32_t id, void* event_data)
 {
-    if (id == VIEW_EVENT_TIME && bus_time_label) {
+    if (id != VIEW_EVENT_TIME) return;
+    if (clock_widget) {
+        sbb_clock_set_time_synced(clock_widget, indicator_time_is_synced());
+    }
+    if (bus_time_label) {
         time_t now;
         struct tm timeinfo;
         time(&now);
@@ -2099,12 +2106,16 @@ int indicator_view_init(void)
         lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
     }
     
-    // Create tabs
+    // Create tabs – Clock first, then Bus, Train, Settings
+    lv_obj_t *clock_tab = lv_tabview_add_tab(tabview, "Clock");
     lv_obj_t *bus_tab = lv_tabview_add_tab(tabview, "Bus");
     lv_obj_t *train_tab = lv_tabview_add_tab(tabview, "Train");
     lv_obj_t *settings_tab = lv_tabview_add_tab(tabview, "Settings");
     
     // Remove padding from tabs and ensure no focus ring
+    lv_obj_set_style_pad_all(clock_tab, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(clock_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
+    
     lv_obj_set_style_pad_all(bus_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(bus_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
     
@@ -2113,6 +2124,24 @@ int indicator_view_init(void)
     
     lv_obj_set_style_pad_all(settings_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(settings_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
+    
+    // Create clock screen (first tab) – SBB clock, all hands at 12 until NTP sync
+    clock_screen = lv_obj_create(clock_tab);
+    lv_obj_set_size(clock_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(clock_screen, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_width(clock_screen, 0, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(clock_screen, lv_color_hex(0x1A1A1A), LV_PART_MAIN);
+    lv_obj_clear_flag(clock_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_coord_t w = lv_disp_get_hor_res(NULL);
+    lv_coord_t h = lv_disp_get_ver_res(NULL);
+    lv_coord_t clock_size = (w < h) ? w : h;
+    clock_size = (clock_size * 90) / 100;
+    if (clock_size < 80) clock_size = 80;
+    clock_widget = sbb_clock_create(clock_screen, clock_size);
+    if (clock_widget) {
+        lv_obj_center(clock_widget);
+        sbb_clock_set_time_synced(clock_widget, indicator_time_is_synced());
+    }
     
     // Create screens
     create_bus_screen(bus_tab);

@@ -69,40 +69,56 @@ static void initial_fetch_task(void *arg)
 {
     ESP_LOGI(TAG, "Waiting for WiFi connection...");
     
-    // Wait for WiFi connection (up to 30 seconds)
+    // Wait for WiFi connection (up to 60 seconds to handle slow or unstable connections)
     int retries = 0;
-    while (!network_manager_is_connected() && retries < 30) {
+    while (!network_manager_is_connected() && retries < 60) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         retries++;
+        if (retries % 10 == 0) {
+            ESP_LOGI(TAG, "Still waiting for WiFi... (%d/60)", retries);
+        }
     }
     
     if (!network_manager_is_connected()) {
-        ESP_LOGE(TAG, "WiFi connection timeout");
+        ESP_LOGW(TAG, "WiFi connection timeout after 60 seconds");
+        ESP_LOGW(TAG, "Application will continue with limited functionality");
+        ESP_LOGW(TAG, "Data refresh will start automatically when WiFi connects");
         vTaskDelete(NULL);
         return;
     }
+    
+    ESP_LOGI(TAG, "WiFi connected after %d seconds", retries);
 
     ESP_LOGI(TAG, "WiFi connected, waiting for time sync...");
     
-    // Wait for time sync (up to 60 seconds)
+    // Wait for time sync (up to 120 seconds to handle unstable WiFi)
     retries = 0;
     time_t now;
     struct tm timeinfo;
     time(&now);
     localtime_r(&now, &timeinfo);
     
-    while (timeinfo.tm_year < (2020 - 1900) && retries < 60) {
+    while (timeinfo.tm_year < (2020 - 1900) && retries < 120) {
         vTaskDelay(pdMS_TO_TICKS(1000));
         time(&now);
         localtime_r(&now, &timeinfo);
         retries++;
-        if (retries % 5 == 0) ESP_LOGI(TAG, "Waiting for time sync... (%d/60)", retries);
+        
+        // Check if we're still connected to WiFi
+        if (!network_manager_is_connected() && retries % 10 == 0) {
+            ESP_LOGW(TAG, "WiFi disconnected during time sync, waiting for reconnection...");
+        }
+        
+        if (retries % 10 == 0) {
+            ESP_LOGI(TAG, "Waiting for time sync... (%d/120)", retries);
+        }
     }
     
     if (timeinfo.tm_year < (2020 - 1900)) {
-        ESP_LOGE(TAG, "Time sync timeout");
+        ESP_LOGW(TAG, "Time sync timeout after %d seconds - continuing with unsynced time", retries);
+        ESP_LOGW(TAG, "Application will retry NTP sync when WiFi connection stabilizes");
     } else {
-        ESP_LOGI(TAG, "Time synced: %s", asctime(&timeinfo));
+        ESP_LOGI(TAG, "Time synced successfully after %d seconds: %s", retries, asctime(&timeinfo));
     }
 
     ESP_LOGI(TAG, "Checking internet connectivity (ping 1.1.1.1)...");

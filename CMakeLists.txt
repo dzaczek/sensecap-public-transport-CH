@@ -12,3 +12,6 @@ set(EXCLUDE_COMPONENTS LoRaWAN)
 add_compile_options(-fdiagnostics-color=always -w)
 
 project(indicator_public_transport)
+
+# Required for LVGL rotation (clock hands, dial marks). Without this, transforms do not draw.
+add_compile_definitions(LV_DRAW_COMPLEX=1)

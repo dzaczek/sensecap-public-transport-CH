@@ -12,5 +12,5 @@ set(CONTROLLER_DIR ./controller)
 file(GLOB_RECURSE CONTROLLER_SOURCES ${CONTROLLER_DIR}/*.c)
 
 idf_component_register(
-    SRCS "main.c" "lv_port.c" "arimo_14.c" "arimo_16.c" "arimo_20.c" "arimo_24.c" ${MODEL_SOURCES} ${VIEW_SOURCES} ${CONTROLLER_SOURCES}
+    SRCS "main.c" "lv_port.c" "sbb_clock.c" "arimo_14.c" "arimo_16.c" "arimo_20.c" "arimo_24.c" ${MODEL_SOURCES} ${VIEW_SOURCES} ${CONTROLLER_SOURCES}
     INCLUDE_DIRS "." ${MODEL_DIR} ${VIEW_DIR} ${CONTROLLER_DIR})
