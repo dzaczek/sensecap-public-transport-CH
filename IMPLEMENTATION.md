@@ -184,6 +184,59 @@ Edit `transport_data.h` to customize:
 3. **Smart Caching**: Data cached for 2 hours during night mode
 4. **Timer Efficiency**: Single timer handles both bus and train refresh
 
+### SBB Clock Minute Hand Physics
+
+The Swiss Railway (SBB) clock features a realistic damped oscillation effect on the minute hand, simulating the physical behavior of a heavy metal hand with inertia.
+
+#### Algorithm: Damped Harmonic Oscillation
+
+When the minute hand jumps to a new minute position, it doesn't stop immediately but oscillates around the target position before settling, mimicking the mechanical behavior of a real Swiss railway clock.
+
+**Mathematical Model:**
+```
+displacement(t) = A × e^(-ζt) × cos(ωt)
+```
+
+Where:
+- `A` = Initial amplitude (-2.4°, backward swing)
+- `ζ` = Damping coefficient (8.0, controls decay rate)
+- `ω` = Angular frequency (30.0 rad/s, ~4.77 Hz)
+- `t` = Time since minute jump (seconds)
+
+**Implementation Details:**
+
+1. **Trigger Detection**: On each timer tick (10ms), the system detects minute transitions:
+   ```c
+   if (current_minute != last_minute) {
+       last_minute = current_minute;
+       last_minute_jump_ms = now_ms;  // Reset bounce timer
+   }
+   ```
+
+2. **Physics Calculation** (active for 500ms after jump):
+   ```c
+   float t = (now_ms - last_minute_jump_ms) / 1000.0f;
+   float bounce = -2.4f × exp(-8.0f × t) × cos(30.0f × t);
+   minute_angle = base_angle + bounce;
+   ```
+
+3. **Performance Optimization**:
+   - Minute hand updates **only during bounce** (first 500ms)
+   - After oscillation ends, updates **stop** (saves 99% CPU cycles)
+   - No updates for 59.5 seconds until next minute jump
+
+**Oscillation Characteristics:**
+
+| Time (ms) | Amplitude | Visibility | Oscillations |
+|-----------|-----------|------------|--------------|
+| 0         | 100% (-2.4°) | Full swing backward | 0 |
+| 100       | 45% (-1.1°)  | Very visible | 0.5 |
+| 200       | 20% (-0.48°) | Visible | 1.0 |
+| 300       | 9% (-0.22°)  | Subtle | 1.4 |
+| 500       | 2% (-0.04°)  | Imperceptible | 2.4 |
+
+**Result**: The minute hand exhibits approximately **3-4 damped oscillations** over 500ms, creating a natural, mechanical feel that distinguishes it from typical digital clock implementations.
+
 ### Future Enhancements
 
 - WiFi credential input via on-screen keyboard
