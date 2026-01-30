@@ -162,7 +162,12 @@ static IRAM_ATTR void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *
         x = data->point.x;
         y = data->point.y;
 
-        indicator_display_sleep_restart();
+        // Wake up display if it's off, then restart sleep timer
+        if (!indicator_display_st_get()) {
+            indicator_display_on();
+        } else {
+            indicator_display_sleep_restart();
+        }
     } else {
         data->state = LV_INDEV_STATE_REL;
         data->point.x = x;

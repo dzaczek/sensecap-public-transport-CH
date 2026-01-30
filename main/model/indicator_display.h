@@ -19,6 +19,8 @@ int indicator_display_off(void);
 
 int indicator_display_sleep_restart(void);
 
+void indicator_display_cfg_get(struct view_data_display *p_cfg);
+
 #ifdef __cplusplus
 }
 #endif

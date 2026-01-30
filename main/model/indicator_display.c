@@ -236,10 +236,12 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             int *p_brightness= (int *)event_data;
             struct view_data_display cfg;
 
-            ESP_LOGI(TAG, "event: VIEW_EVENT_BRIGHTNESS_UPDATE, brightnes:%d", *p_brightness);
+            ESP_LOGI(TAG, "event: VIEW_EVENT_BRIGHTNESS_UPDATE, brightness:%d", *p_brightness);
          
+            // Update brightness immediately (live preview)
             __lcd_bl_set(*p_brightness);
            
+            // Update in-memory config (but don't save yet - wait for APPLY)
             __display_cfg_get(&cfg);
             cfg.brightness=*p_brightness;
             __display_cfg_set(&cfg);
@@ -251,9 +253,17 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             ESP_LOGI(TAG, "event: VIEW_EVENT_DISPLAY_CFG_APPLY");
             __display_cfg_print(p_cfg);
 
+            // Apply brightness immediately
+            __lcd_bl_set(p_cfg->brightness);
+            
+            // Save to memory and NVS
             __display_cfg_set(p_cfg);
             __display_cfg_save(p_cfg);
+            
+            // Restart sleep timer with new settings
             __sleep_mode_restart(p_cfg->sleep_mode_en, p_cfg->sleep_mode_time_min);
+            
+            ESP_LOGI(TAG, "Display configuration applied and saved successfully");
             break;
         }
     
@@ -318,4 +328,12 @@ int indicator_display_off(void)
 {
     __lcd_bl_off();
     __timer_stop();
+    return 0;
+}
+
+void indicator_display_cfg_get(struct view_data_display *p_cfg)
+{
+    if (p_cfg) {
+        __display_cfg_get(p_cfg);
+    }
 }

@@ -2,7 +2,64 @@
 
 ## Overview
 
-This application implements a comprehensive Public Transport Monitor for the ESP32-S3 SenseCAP Indicator, featuring three main screens with smart refresh logic based on time of day.
+This application implements a comprehensive Public Transport Monitor for the ESP32-S3 SenseCAP Indicator, featuring four main tabs (Clock, Bus, Train, Settings) with smart refresh logic based on time of day.
+
+## Screen flow
+
+The UI uses an LVGL TabView. Tabs are shown in this order: **Clock** → **Bus** → **Train** → **Settings**. Within each tab, sub-screens and overlays are shown as follows:
+
+```mermaid
+flowchart LR
+    subgraph Tabs["Tab order (swipe or tap)"]
+        direction LR
+        A[1. Clock] --> B[2. Bus]
+        B --> C[3. Train]
+        C --> D[4. Settings]
+    end
+
+    subgraph Clock["Clock tab"]
+        CLK[SBB Clock]
+    end
+
+    subgraph Bus["Bus tab"]
+        direction TB
+        BUS_SEL[Bus stop selection]
+        BUS_VIEW[Bus countdown list]
+        BUS_DET[Bus details overlay]
+        BUS_SEL <--> BUS_VIEW
+        BUS_VIEW --> BUS_DET
+        BUS_DET --> BUS_VIEW
+    end
+
+    subgraph Train["Train tab"]
+        direction TB
+        TRN_SEL[Station selection]
+        TRN_VIEW[Train station board]
+        TRN_DET[Train details overlay]
+        TRN_SEL <--> TRN_VIEW
+        TRN_VIEW --> TRN_DET
+        TRN_DET --> TRN_VIEW
+    end
+
+    subgraph Settings["Settings tab"]
+        direction TB
+        SET_MAIN[Settings main: WiFi, Display, API status]
+        WIFI_LIST[WiFi list]
+        WIFI_PWD[WiFi password overlay]
+        SET_MAIN --> WIFI_LIST
+        WIFI_LIST --> WIFI_PWD
+        WIFI_PWD --> SET_MAIN
+    end
+```
+
+**Summary:**
+
+| Tab       | Screens / overlays | Navigation |
+|----------|--------------------|------------|
+| **Clock** | SBB clock (single screen) | — |
+| **Bus**   | Stop selection ↔ Countdown list; Details overlay on tap | Back / Prev / Next buttons; Close on details |
+| **Train** | Station selection ↔ Station board; Details overlay on tap | Back button; Close on details |
+| **Settings** | Main (WiFi, brightness, sleep, API); WiFi list; Password overlay | Open WiFi → list → tap network → password; Apply / Back |
 
 ## Architecture
 
@@ -25,8 +82,8 @@ This application implements a comprehensive Public Transport Monitor for the ESP
 
 3. **indicator_view** (`view/indicator_view.c`)
    - LVGL-based UI implementation
-   - Three screens: Bus Countdown, Train Station, Settings
-   - TabView navigation between screens
+   - Four tabs: Clock, Bus Countdown, Train Station, Settings (see [Screen flow](#screen-flow))
+   - TabView navigation between tabs; sub-screens and overlays within Bus, Train, Settings
    - Real-time updates via event system
 
 ### Smart Refresh Logic

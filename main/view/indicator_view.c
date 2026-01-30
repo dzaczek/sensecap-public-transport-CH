@@ -6,6 +6,7 @@
 #include "network_manager.h"
 #include "transport_data.h"
 #include "indicator_time.h"  // For time updates
+#include "indicator_display.h"  // For display config
 #include "sbb_clock.h"
 #include "config.h"
 #include <string.h>
@@ -58,6 +59,7 @@ static void prev_btn_cb(lv_event_t *e);
 static void next_btn_cb(lv_event_t *e);
 static void brightness_slider_cb(lv_event_t *e);
 static void sleep_slider_cb(lv_event_t *e);
+static void display_apply_btn_cb(lv_event_t *e);
 static void time_update_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void tabview_event_cb(lv_event_t *e);
@@ -69,7 +71,7 @@ typedef struct {
     const char *id;
 } station_t;
 
-/* (bus/tram) – ID z transport.opendata.ch/v1/locations?query=Aarau */
+/* (bus/tram) – ID from transport.opendata.ch/v1/locations?query=Aarau */
 static const station_t predefined_bus_stops[] = {
     {"Aarau, Gais", "8590142"},
     {"Aarau Bahnhof", "8502996"},
@@ -108,7 +110,7 @@ static lv_obj_t *bus_details_list = NULL;
 static lv_obj_t *bus_details_title = NULL;
 static lv_obj_t *bus_details_close_btn = NULL;
 
-/*  – ID z transport.opendata.ch */
+/* – ID from transport.opendata.ch */
 static const station_t predefined_stations[] = {
     {"Aarau", "8502113"},
     {"Zürich HB", "8503000"},
@@ -128,9 +130,13 @@ static lv_obj_t *brightness_label = NULL;
 static lv_obj_t *sleep_slider = NULL;
 static lv_obj_t *sleep_label = NULL;
 
+// Flag to prevent slider updates during user interaction
+static bool display_settings_user_editing = false;
+
 // Settings / Display screen widgets
 static lv_obj_t *settings_main_cont = NULL;
 static lv_obj_t *display_settings_cont = NULL;
+static lv_obj_t *display_apply_btn = NULL;
 // WiFi Screen widgets
 static lv_obj_t *wifi_view_cont = NULL;
 static lv_obj_t *wifi_netinfo_cont = NULL;  /* panel with IP, DNS, RSSI, etc. */
@@ -147,6 +153,7 @@ static void update_train_screen(const struct view_data_train_station *data);
 static void update_train_details_screen(const struct view_data_train_details *data);
 static void update_bus_details_screen(const struct view_data_bus_details *data);
 static void update_settings_screen(const struct view_data_settings *data);
+static void update_display_settings(const struct view_data_display *cfg);
 static void update_wifi_list(const struct view_data_wifi_list *list);
 static void update_wifi_network_info(void);
 static void create_bus_screen(lv_obj_t *parent);
@@ -444,25 +451,37 @@ static void refresh_btn_cb(lv_event_t *e)
 static void brightness_slider_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
+    lv_event_code_t code = lv_event_get_code(e);
     int32_t value = lv_slider_get_value(slider);
     
+    // Set flag when user starts editing
+    if (code == LV_EVENT_PRESSING || code == LV_EVENT_VALUE_CHANGED) {
+        display_settings_user_editing = true;
+    }
+    
     char buf[32];
-    snprintf(buf, sizeof(buf), "Brightness: %d%%", value);
+    snprintf(buf, sizeof(buf), "Brightness: %d%%", (int)value);
     lv_label_set_text(brightness_label, buf);
     
-    // Update display brightness via event system
-    uint8_t brightness = (uint8_t)value;
+    // Immediately update display brightness (live preview) - but don't save
+    int brightness = (int)value;
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_BRIGHTNESS_UPDATE,
                      &brightness, sizeof(brightness), portMAX_DELAY);
 }
 
 /**
- * @brief Sleep timeout slider callback
+ * @brief Sleep timeout slider callback - just updates label (apply saves config)
  */
 static void sleep_slider_cb(lv_event_t *e)
 {
     lv_obj_t *slider = lv_event_get_target(e);
+    lv_event_code_t code = lv_event_get_code(e);
     int32_t value = lv_slider_get_value(slider);
+    
+    // Set flag when user starts editing
+    if (code == LV_EVENT_PRESSING || code == LV_EVENT_VALUE_CHANGED) {
+        display_settings_user_editing = true;
+    }
     
     const char *text[] = {"Always On", "1 min", "5 min", "10 min", "30 min", "60 min"};
     int index = value / 20;  // 0-5
@@ -471,6 +490,50 @@ static void sleep_slider_cb(lv_event_t *e)
     char buf[32];
     snprintf(buf, sizeof(buf), "Timeout: %s", text[index]);
     lv_label_set_text(sleep_label, buf);
+}
+
+/**
+ * @brief Apply button callback - saves display configuration
+ */
+static void display_apply_btn_cb(lv_event_t *e)
+{
+    if (!brightness_slider || !sleep_slider) return;
+    
+    struct view_data_display cfg;
+    
+    // Get brightness value
+    cfg.brightness = (int)lv_slider_get_value(brightness_slider);
+    
+    // Get sleep timeout value
+    int32_t sleep_value = lv_slider_get_value(sleep_slider);
+    int index = sleep_value / 20;  // 0-5
+    if (index > 5) index = 5;
+    
+    // Map index to minutes: 0=off, 1=1min, 2=5min, 3=10min, 4=30min, 5=60min
+    const int timeout_minutes[] = {0, 1, 5, 10, 30, 60};
+    cfg.sleep_mode_time_min = timeout_minutes[index];
+    cfg.sleep_mode_en = (cfg.sleep_mode_time_min > 0);
+    
+    ESP_LOGI(TAG, "Applying display config: brightness=%d, timeout=%d min, enabled=%d", 
+             cfg.brightness, cfg.sleep_mode_time_min, cfg.sleep_mode_en);
+    
+    // Clear editing flag - allow updates now
+    display_settings_user_editing = false;
+    
+    // Send event to save and apply configuration
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG_APPLY,
+                     &cfg, sizeof(cfg), portMAX_DELAY);
+    
+    // Visual feedback
+    lv_obj_t *apply_btn = lv_event_get_target(e);
+    if (apply_btn) {
+        lv_obj_t *lbl = lv_obj_get_child(apply_btn, 0);
+        if (lbl) {
+            const char *old_text = lv_label_get_text(lbl);
+            lv_label_set_text(lbl, "Saved!");
+            // Note: Text will be reset on next entry to display settings or by timer
+        }
+    }
 }
 
 /**
@@ -1002,6 +1065,81 @@ static void update_settings_screen(const struct view_data_settings *data)
         }
     }
     
+    // Update sleep timeout slider
+    if (sleep_slider && data->sleep_timeout_min >= 0) {
+        // Map minutes to slider value: 0=0, 1=20, 5=40, 10=60, 30=80, 60=100
+        int slider_val = 0;
+        if (data->sleep_timeout_min == 0) slider_val = 0;
+        else if (data->sleep_timeout_min == 1) slider_val = 20;
+        else if (data->sleep_timeout_min == 5) slider_val = 40;
+        else if (data->sleep_timeout_min == 10) slider_val = 60;
+        else if (data->sleep_timeout_min == 30) slider_val = 80;
+        else if (data->sleep_timeout_min >= 60) slider_val = 100;
+        else slider_val = 0; // default to always on for unknown values
+        
+        lv_slider_set_value(sleep_slider, slider_val, LV_ANIM_OFF);
+        
+        const char *text[] = {"Always On", "1 min", "5 min", "10 min", "30 min", "60 min"};
+        int index = slider_val / 20;
+        if (index > 5) index = 5;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Timeout: %s", text[index]);
+        if (sleep_label) {
+            lv_label_set_text(sleep_label, buf);
+        }
+    }
+    
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Update display settings from config
+ */
+static void update_display_settings(const struct view_data_display *cfg)
+{
+    if (!cfg) return;
+    
+    // Don't update sliders if user is currently editing them
+    if (display_settings_user_editing) {
+        ESP_LOGD(TAG, "Skipping display settings update - user is editing");
+        return;
+    }
+    
+    lv_port_sem_take();
+    
+    // Update brightness slider
+    if (brightness_slider) {
+        lv_slider_set_value(brightness_slider, cfg->brightness, LV_ANIM_OFF);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Brightness: %d%%", cfg->brightness);
+        if (brightness_label) {
+            lv_label_set_text(brightness_label, buf);
+        }
+    }
+    
+    // Update sleep timeout slider
+    if (sleep_slider) {
+        // Map minutes to slider value
+        int slider_val = 0;
+        if (cfg->sleep_mode_time_min == 0) slider_val = 0;
+        else if (cfg->sleep_mode_time_min == 1) slider_val = 20;
+        else if (cfg->sleep_mode_time_min == 5) slider_val = 40;
+        else if (cfg->sleep_mode_time_min == 10) slider_val = 60;
+        else if (cfg->sleep_mode_time_min == 30) slider_val = 80;
+        else if (cfg->sleep_mode_time_min >= 60) slider_val = 100;
+        
+        lv_slider_set_value(sleep_slider, slider_val, LV_ANIM_OFF);
+        
+        const char *text[] = {"Always On", "1 min", "5 min", "10 min", "30 min", "60 min"};
+        int index = slider_val / 20;
+        if (index > 5) index = 5;
+        char buf[32];
+        snprintf(buf, sizeof(buf), "Timeout: %s", text[index]);
+        if (sleep_label) {
+            lv_label_set_text(sleep_label, buf);
+        }
+    }
+    
     lv_port_sem_give();
 }
 
@@ -1389,8 +1527,27 @@ static void wifi_back_btn_cb(lv_event_t *e)
  */
 static void display_btn_cb(lv_event_t *e)
 {
+    // Clear editing flag to allow loading current config
+    display_settings_user_editing = false;
+    
     lv_obj_add_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(display_settings_cont, LV_OBJ_FLAG_HIDDEN);
+    
+    // Reset apply button text
+    if (display_apply_btn) {
+        lv_obj_t *lbl = lv_obj_get_child(display_apply_btn, 0);
+        if (lbl) {
+            lv_label_set_text(lbl, "Apply & Save");
+        }
+    }
+    
+    // Load current display config and update sliders
+    struct view_data_display cfg;
+    indicator_display_cfg_get(&cfg);
+    update_display_settings(&cfg);
+    
+    ESP_LOGI(TAG, "Display settings opened - loaded config: brightness=%d, timeout=%d min", 
+             cfg.brightness, cfg.sleep_mode_time_min);
 }
 
 /**
@@ -1398,6 +1555,9 @@ static void display_btn_cb(lv_event_t *e)
  */
 static void display_back_btn_cb(lv_event_t *e)
 {
+    // Clear editing flag when leaving
+    display_settings_user_editing = false;
+    
     lv_obj_add_flag(display_settings_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
 }
@@ -1962,7 +2122,7 @@ static void create_settings_screen(lv_obj_t *parent)
     brightness_slider = lv_slider_create(display_settings_cont);
     lv_obj_set_size(brightness_slider, LV_PCT(80), 20);
     lv_obj_align(brightness_slider, LV_ALIGN_TOP_LEFT, 10, 100);
-    lv_slider_set_range(brightness_slider, 0, 100);
+    lv_slider_set_range(brightness_slider, 1, 100);  // 1-100 range to avoid black screen at 0
     lv_slider_set_value(brightness_slider, 50, LV_ANIM_OFF);
     lv_obj_add_event_cb(brightness_slider, brightness_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
@@ -1977,6 +2137,17 @@ static void create_settings_screen(lv_obj_t *parent)
     lv_slider_set_range(sleep_slider, 0, 100);
     lv_slider_set_value(sleep_slider, 0, LV_ANIM_OFF);
     lv_obj_add_event_cb(sleep_slider, sleep_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // Apply button to save configuration
+    display_apply_btn = lv_btn_create(display_settings_cont);
+    lv_obj_set_size(display_apply_btn, LV_PCT(80), 50);
+    lv_obj_align(display_apply_btn, LV_ALIGN_TOP_LEFT, 10, 230);
+    lv_obj_set_style_bg_color(display_apply_btn, lv_color_hex(0x008000), 0); // Green
+    lv_obj_add_event_cb(display_apply_btn, display_apply_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *apply_lbl = lv_label_create(display_apply_btn);
+    lv_label_set_text(apply_lbl, "Apply & Save");
+    lv_obj_set_style_text_font(apply_lbl, &arimo_20, 0);
+    lv_obj_center(apply_lbl);
 }
 
 /**
@@ -2075,6 +2246,11 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
              // struct view_data_wifi_connet_ret_msg *msg = (struct view_data_wifi_connet_ret_msg *)event_data;
              // TODO: Show result to user
              break;
+        }
+        case VIEW_EVENT_DISPLAY_CFG: {
+            const struct view_data_display *cfg = (const struct view_data_display *)event_data;
+            update_display_settings(cfg);
+            break;
         }
         default:
             break;
@@ -2192,6 +2368,9 @@ int indicator_view_init(void)
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_WIFI_CONNECT_RET,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_DISPLAY_CFG,
                                             view_event_handler, NULL, NULL);
     // Register time event handler for footer updates
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,

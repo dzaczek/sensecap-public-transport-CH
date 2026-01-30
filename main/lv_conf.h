@@ -2,13 +2,13 @@
  * LVGL configuration override for this project.
  * Ensures rotation/transform (clock hands, dial marks) work.
  *
- * KROK 1: Włącz LV_DRAW_COMPLEX (tu już ustawione na 1).
- * Jeśli wskazówki nadal się nie obracają, skopiuj ten plik do
- * managed_components/lv_conf.h (obok folderu lvgl), potem:
+ * STEP 1: Enable LV_DRAW_COMPLEX (already set to 1 here).
+ * If hands still do not rotate, copy this file to
+ * managed_components/lv_conf.h (next to the lvgl folder), then:
  *   idf.py fullclean
  *   idf.py build
  *
- * KROK 2: Zalecane LV_MEM_SIZE min. 32–64 KB w konfiguracji LVGL (menuconfig).
+ * STEP 2: Recommended LV_MEM_SIZE min. 32–64 KB in LVGL config (menuconfig).
  */
 #ifndef LV_CONF_H
 #define LV_CONF_H
