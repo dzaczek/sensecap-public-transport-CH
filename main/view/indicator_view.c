@@ -147,6 +147,28 @@ static lv_obj_t *wifi_password_ssid_label = NULL;  /* left panel SSID, updated w
 static lv_obj_t *wifi_keyboard = NULL;
 static char current_wifi_ssid[32];
 
+// WiFi Saved Networks widgets
+static lv_obj_t *wifi_saved_cont = NULL;
+static lv_obj_t *wifi_saved_list = NULL;
+
+// WiFi Add Network widgets
+static lv_obj_t *wifi_add_cont = NULL;
+static lv_obj_t *wifi_add_ssid_ta = NULL;
+static lv_obj_t *wifi_add_password_ta = NULL;
+static lv_obj_t *wifi_add_password_checkbox = NULL;
+static lv_obj_t *wifi_add_keyboard = NULL;
+
+// System Info Screen widgets
+static lv_obj_t *sysinfo_cont = NULL;
+static lv_obj_t *sysinfo_chip_label = NULL;
+static lv_obj_t *sysinfo_ram_label = NULL;
+static lv_obj_t *sysinfo_ram_min_label = NULL;
+static lv_obj_t *sysinfo_psram_label = NULL;
+static lv_obj_t *sysinfo_uptime_label = NULL;
+static lv_obj_t *sysinfo_versions_label = NULL;
+static lv_obj_t *sysinfo_author_label = NULL;
+static lv_obj_t *sysinfo_build_label = NULL;
+
 // Forward declarations
 static void update_bus_screen(const struct view_data_bus_countdown *data);
 static void update_train_screen(const struct view_data_train_station *data);
@@ -163,6 +185,11 @@ static void create_train_details_screen(lv_obj_t *parent);
 static void create_settings_screen(lv_obj_t *parent);
 static void create_wifi_screen(lv_obj_t *parent);
 static void create_wifi_password_screen(lv_obj_t *parent);
+static void create_wifi_saved_screen(lv_obj_t *parent);
+static void create_wifi_add_screen(lv_obj_t *parent);
+static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list);
+static void create_sysinfo_screen(lv_obj_t *parent);
+static void update_sysinfo_screen(const struct view_data_system_info *info);
 static void refresh_btn_cb(lv_event_t *e);
 static void bus_refresh_btn_cb(lv_event_t *e);
 static void bus_back_btn_cb(lv_event_t *e);
@@ -183,6 +210,8 @@ static void sleep_slider_cb(lv_event_t *e);
 static void wifi_btn_cb(lv_event_t *e);
 static void display_btn_cb(lv_event_t *e);
 static void display_back_btn_cb(lv_event_t *e);
+static void sysinfo_btn_cb(lv_event_t *e);
+static void sysinfo_back_btn_cb(lv_event_t *e);
 static void wifi_back_btn_cb(lv_event_t *e);
 static void wifi_scan_btn_cb(lv_event_t *e);
 static void wifi_list_item_cb(lv_event_t *e);
@@ -190,6 +219,13 @@ static void wifi_password_back_btn_cb(lv_event_t *e);
 static void wifi_connect_btn_cb(lv_event_t *e);
 static void wifi_save_backup_btn_cb(lv_event_t *e);
 static void wifi_keyboard_event_cb(lv_event_t *e);
+static void wifi_saved_btn_cb(lv_event_t *e);
+static void wifi_saved_back_btn_cb(lv_event_t *e);
+static void wifi_saved_item_connect_cb(lv_event_t *e);
+static void wifi_saved_item_delete_cb(lv_event_t *e);
+static void wifi_add_btn_cb(lv_event_t *e);
+static void wifi_add_back_btn_cb(lv_event_t *e);
+static void wifi_add_save_btn_cb(lv_event_t *e);
 static void time_update_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 
@@ -1563,6 +1599,24 @@ static void display_back_btn_cb(lv_event_t *e)
 }
 
 /**
+ * @brief System Info Button Callback
+ */
+static void sysinfo_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(sysinfo_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief System Info Back Button Callback
+ */
+static void sysinfo_back_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(sysinfo_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
  * @brief WiFi Scan/Refresh Button Callback
  */
 static void wifi_scan_btn_cb(lv_event_t *e)
@@ -1672,6 +1726,124 @@ static void wifi_keyboard_event_cb(lv_event_t *e)
             wifi_password_back_btn_cb(NULL);
         }
     }
+}
+
+/**
+ * @brief Saved Networks Button Callback
+ */
+static void wifi_saved_btn_cb(lv_event_t *e)
+{
+    // Hide WiFi list, show saved networks
+    lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+    
+    // Request list from backend
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
+                     VIEW_EVENT_WIFI_SAVED_LIST_REQ, NULL, 0, portMAX_DELAY);
+}
+
+/**
+ * @brief Saved Networks Back Button Callback
+ */
+static void wifi_saved_back_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Saved Network Item Connect Callback
+ */
+static void wifi_saved_item_connect_cb(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    const char *ssid = (const char *)lv_obj_get_user_data(btn);
+    
+    if (ssid && ssid[0]) {
+        ESP_LOGI(TAG, "Connecting to saved network: %s", ssid);
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
+                         VIEW_EVENT_WIFI_CONNECT_SAVED, 
+                         (void *)ssid, strlen(ssid) + 1, portMAX_DELAY);
+        
+        // Go back to WiFi screen
+        lv_obj_add_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/**
+ * @brief Saved Network Item Delete Callback
+ */
+static void wifi_saved_item_delete_cb(lv_event_t *e)
+{
+    lv_obj_t *btn = lv_event_get_target(e);
+    const char *ssid = (const char *)lv_obj_get_user_data(btn);
+    
+    if (ssid && ssid[0]) {
+        ESP_LOGI(TAG, "Deleting network: %s", ssid);
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
+                         VIEW_EVENT_WIFI_DELETE_NETWORK, 
+                         (void *)ssid, strlen(ssid) + 1, portMAX_DELAY);
+        
+        // Backend will send updated list
+    }
+}
+
+/**
+ * @brief Add Network Button Callback
+ */
+static void wifi_add_btn_cb(lv_event_t *e)
+{
+    // Clear form
+    lv_textarea_set_text(wifi_add_ssid_ta, "");
+    lv_textarea_set_text(wifi_add_password_ta, "");
+    lv_obj_clear_state(wifi_add_password_checkbox, LV_STATE_CHECKED);
+    
+    // Hide saved networks, show add form
+    lv_obj_add_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_add_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Add Network Back Button Callback
+ */
+static void wifi_add_back_btn_cb(lv_event_t *e)
+{
+    lv_obj_add_flag(wifi_add_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Add Network Save Button Callback
+ */
+static void wifi_add_save_btn_cb(lv_event_t *e)
+{
+    const char *ssid = lv_textarea_get_text(wifi_add_ssid_ta);
+    const char *password = lv_textarea_get_text(wifi_add_password_ta);
+    bool has_password = lv_obj_has_state(wifi_add_password_checkbox, LV_STATE_CHECKED);
+    
+    if (!ssid || ssid[0] == '\0') {
+        ESP_LOGW(TAG, "SSID is empty");
+        return;
+    }
+    
+    struct view_data_wifi_config cfg = {0};
+    strlcpy(cfg.ssid, ssid, sizeof(cfg.ssid));
+    
+    if (has_password && password && password[0]) {
+        strlcpy((char *)cfg.password, password, sizeof(cfg.password));
+        cfg.have_password = true;
+    } else {
+        cfg.have_password = false;
+    }
+    
+    ESP_LOGI(TAG, "Saving network: %s", cfg.ssid);
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
+                     VIEW_EVENT_WIFI_SAVE_NETWORK, &cfg, sizeof(cfg), portMAX_DELAY);
+    
+    // Go back to saved networks (backend will send updated list)
+    lv_obj_add_flag(wifi_add_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
 /**
@@ -1789,14 +1961,25 @@ static void create_wifi_screen(lv_obj_t *parent)
     
     lv_obj_t *title = lv_label_create(header);
     lv_label_set_text(title, "WiFi");
-    lv_obj_center(title);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, 50, 15);
+    
+    // Saved Networks button
+    lv_obj_t *saved_btn = lv_btn_create(header);
+    lv_obj_set_size(saved_btn, 60, 40);
+    lv_obj_align(saved_btn, LV_ALIGN_RIGHT_MID, -70, 0);
+    lv_obj_add_event_cb(saved_btn, wifi_saved_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *saved_lbl = lv_label_create(saved_btn);
+    lv_label_set_text(saved_lbl, "Saved");
+    lv_obj_set_style_text_font(saved_lbl, &arimo_14, 0);
+    lv_obj_center(saved_lbl);
     
     lv_obj_t *scan_btn = lv_btn_create(header);
-    lv_obj_set_size(scan_btn, 40, 40);
+    lv_obj_set_size(scan_btn, 60, 40);
     lv_obj_align(scan_btn, LV_ALIGN_RIGHT_MID, -5, 0);
     lv_obj_add_event_cb(scan_btn, wifi_scan_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *scan_lbl = lv_label_create(scan_btn);
     lv_label_set_text(scan_lbl, "Scan");
+    lv_obj_set_style_text_font(scan_lbl, &arimo_14, 0);
     lv_obj_center(scan_lbl);
     
     // Network info panel (scrollable, under header)
@@ -1910,6 +2093,417 @@ static void create_wifi_password_screen(lv_obj_t *parent)
     lv_obj_set_size(wifi_keyboard, LV_PCT(100), LV_PCT(40));
     lv_obj_align(wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_event_cb(wifi_keyboard, wifi_keyboard_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
+/**
+ * @brief Create WiFi Saved Networks screen
+ */
+static void create_wifi_saved_screen(lv_obj_t *parent)
+{
+    wifi_saved_cont = lv_obj_create(parent);
+    lv_obj_set_size(wifi_saved_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(wifi_saved_cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(wifi_saved_cont, 0, 0);
+    lv_obj_set_style_pad_all(wifi_saved_cont, 10, 0);
+    lv_obj_add_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
+
+    // Header
+    lv_obj_t *header = lv_obj_create(wifi_saved_cont);
+    lv_obj_set_size(header, LV_PCT(100), 50);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(header, lv_color_hex(0x202020), 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(header);
+    lv_obj_set_size(back_btn, 60, 40);
+    lv_obj_align(back_btn, LV_ALIGN_LEFT_MID, 5, 0);
+    lv_obj_add_event_cb(back_btn, wifi_saved_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back_btn);
+    lv_label_set_text(back_lbl, "<");
+    lv_obj_set_style_text_font(back_lbl, &arimo_20, 0);
+    lv_obj_center(back_lbl);
+
+    // Title
+    lv_obj_t *title = lv_label_create(header);
+    lv_label_set_text(title, "Saved Networks");
+    lv_obj_set_style_text_font(title, &arimo_20, 0);
+    lv_obj_center(title);
+
+    // Add button (+)
+    lv_obj_t *add_btn = lv_btn_create(header);
+    lv_obj_set_size(add_btn, 60, 40);
+    lv_obj_align(add_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_add_event_cb(add_btn, wifi_add_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_color(add_btn, lv_color_hex(0x00AA00), 0);
+    lv_obj_t *add_lbl = lv_label_create(add_btn);
+    lv_label_set_text(add_lbl, "+");
+    lv_obj_set_style_text_font(add_lbl, &arimo_24, 0);
+    lv_obj_center(add_lbl);
+
+    // List container
+    wifi_saved_list = lv_obj_create(wifi_saved_cont);
+    lv_obj_set_size(wifi_saved_list, LV_PCT(100), LV_PCT(85));
+    lv_obj_align(wifi_saved_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(wifi_saved_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(wifi_saved_list, 0, 0);
+    lv_obj_set_flex_flow(wifi_saved_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(wifi_saved_list, 5, 0);
+}
+
+/**
+ * @brief Create WiFi Add Network screen
+ */
+static void create_wifi_add_screen(lv_obj_t *parent)
+{
+    wifi_add_cont = lv_obj_create(parent);
+    lv_obj_set_size(wifi_add_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(wifi_add_cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(wifi_add_cont, 0, 0);
+    lv_obj_set_style_pad_all(wifi_add_cont, 0, 0);
+    lv_obj_add_flag(wifi_add_cont, LV_OBJ_FLAG_HIDDEN);
+
+    // Top panel - form (60% height)
+    lv_obj_t *top_panel = lv_obj_create(wifi_add_cont);
+    lv_obj_set_size(top_panel, LV_PCT(100), LV_PCT(60));
+    lv_obj_align(top_panel, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(top_panel, lv_color_hex(0x1a1a1a), 0);
+    lv_obj_set_style_border_width(top_panel, 0, 0);
+    lv_obj_set_style_pad_all(top_panel, 15, 0);
+
+    // Title
+    lv_obj_t *title = lv_label_create(top_panel);
+    lv_label_set_text(title, "Add Network");
+    lv_obj_set_style_text_font(title, &arimo_24, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(top_panel);
+    lv_obj_set_size(back_btn, 60, 40);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 5, 5);
+    lv_obj_add_event_cb(back_btn, wifi_add_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back_btn);
+    lv_label_set_text(back_lbl, "<");
+    lv_obj_set_style_text_font(back_lbl, &arimo_20, 0);
+    lv_obj_center(back_lbl);
+
+    // SSID label
+    lv_obj_t *ssid_lbl = lv_label_create(top_panel);
+    lv_label_set_text(ssid_lbl, "SSID:");
+    lv_obj_set_style_text_font(ssid_lbl, &arimo_16, 0);
+    lv_obj_set_style_text_color(ssid_lbl, lv_color_white(), 0);
+    lv_obj_align(ssid_lbl, LV_ALIGN_TOP_LEFT, 15, 55);
+
+    // SSID input
+    wifi_add_ssid_ta = lv_textarea_create(top_panel);
+    lv_textarea_set_one_line(wifi_add_ssid_ta, true);
+    lv_obj_set_size(wifi_add_ssid_ta, LV_PCT(90), 55);
+    lv_obj_align(wifi_add_ssid_ta, LV_ALIGN_TOP_MID, 0, 85);
+    lv_obj_set_style_text_font(wifi_add_ssid_ta, &arimo_20, 0);
+
+    // Password checkbox
+    wifi_add_password_checkbox = lv_checkbox_create(top_panel);
+    lv_checkbox_set_text(wifi_add_password_checkbox, "Has Password");
+    lv_obj_set_style_text_font(wifi_add_password_checkbox, &arimo_16, 0);
+    lv_obj_align(wifi_add_password_checkbox, LV_ALIGN_TOP_LEFT, 15, 155);
+
+    // Password label
+    lv_obj_t *pass_lbl = lv_label_create(top_panel);
+    lv_label_set_text(pass_lbl, "Password:");
+    lv_obj_set_style_text_font(pass_lbl, &arimo_16, 0);
+    lv_obj_set_style_text_color(pass_lbl, lv_color_white(), 0);
+    lv_obj_align(pass_lbl, LV_ALIGN_TOP_LEFT, 15, 195);
+
+    // Password input
+    wifi_add_password_ta = lv_textarea_create(top_panel);
+    lv_textarea_set_one_line(wifi_add_password_ta, true);
+    lv_textarea_set_password_mode(wifi_add_password_ta, true);
+    lv_obj_set_size(wifi_add_password_ta, LV_PCT(90), 55);
+    lv_obj_align(wifi_add_password_ta, LV_ALIGN_TOP_MID, 0, 225);
+    lv_obj_set_style_text_font(wifi_add_password_ta, &arimo_20, 0);
+
+    // Save button (right side)
+    lv_obj_t *save_btn = lv_btn_create(top_panel);
+    lv_obj_set_size(save_btn, 120, 50);
+    lv_obj_align(save_btn, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
+    lv_obj_set_style_bg_color(save_btn, lv_color_hex(0x00AA00), 0);
+    lv_obj_add_event_cb(save_btn, wifi_add_save_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *save_lbl = lv_label_create(save_btn);
+    lv_label_set_text(save_lbl, "Save");
+    lv_obj_set_style_text_font(save_lbl, &arimo_20, 0);
+    lv_obj_center(save_lbl);
+
+    // Bottom panel - keyboard (40% height, full width)
+    wifi_add_keyboard = lv_keyboard_create(wifi_add_cont);
+    lv_obj_set_size(wifi_add_keyboard, LV_PCT(100), LV_PCT(40));
+    lv_obj_align(wifi_add_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_keyboard_set_textarea(wifi_add_keyboard, wifi_add_ssid_ta);
+}
+
+/**
+ * @brief Update WiFi Saved Networks list
+ */
+static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
+{
+    if (!list) return;
+
+    lv_port_sem_take();
+
+    // Clear existing items
+    lv_obj_clean(wifi_saved_list);
+
+    if (list->count == 0) {
+        lv_obj_t *empty_lbl = lv_label_create(wifi_saved_list);
+        lv_label_set_text(empty_lbl, "No saved networks\n\nClick '+' to add one");
+        lv_obj_set_style_text_font(empty_lbl, &arimo_20, 0);
+        lv_obj_set_style_text_color(empty_lbl, lv_color_hex(0xAAAAAA), 0);
+        lv_obj_set_style_text_align(empty_lbl, LV_TEXT_ALIGN_CENTER, 0);
+        lv_port_sem_give();
+        return;
+    }
+
+    // Get current WiFi status to highlight connected network
+    struct view_data_wifi_st wifi_st;
+    network_manager_get_wifi_status(&wifi_st);
+
+    // Add each saved network
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (!list->networks[i].valid) continue;
+
+        // Check if this is the currently connected network
+        bool is_connected = wifi_st.is_connected && 
+                           (strcmp(wifi_st.ssid, list->networks[i].ssid) == 0);
+
+        lv_obj_t *item = lv_obj_create(wifi_saved_list);
+        lv_obj_set_size(item, LV_PCT(100), 70);
+        
+        // Highlight connected network with different color
+        if (is_connected) {
+            lv_obj_set_style_bg_color(item, lv_color_hex(0x004400), 0);  // Green background
+            lv_obj_set_style_border_color(item, lv_color_hex(0x00FF00), 0);
+            lv_obj_set_style_border_width(item, 2, 0);
+        } else {
+            lv_obj_set_style_bg_color(item, lv_color_hex(0x2a2a2a), 0);
+            lv_obj_set_style_border_width(item, 1, 0);
+            lv_obj_set_style_border_color(item, lv_color_hex(0x555555), 0);
+        }
+        lv_obj_set_style_pad_all(item, 5, 0);
+
+        // SSID label with connection status
+        lv_obj_t *ssid_lbl = lv_label_create(item);
+        char buf[80];
+        const char *lock_icon = list->networks[i].have_password ? "🔒" : "🔓";
+        const char *conn_icon = is_connected ? "✓ " : "";
+        snprintf(buf, sizeof(buf), "%s%s %s", conn_icon, lock_icon, list->networks[i].ssid);
+        lv_label_set_text(ssid_lbl, buf);
+        lv_obj_set_style_text_font(ssid_lbl, &arimo_16, 0);
+        lv_obj_set_style_text_color(ssid_lbl, lv_color_white(), 0);
+        lv_obj_align(ssid_lbl, LV_ALIGN_TOP_LEFT, 10, 5);
+
+        // Status label (if connected)
+        if (is_connected) {
+            lv_obj_t *status_lbl = lv_label_create(item);
+            lv_label_set_text(status_lbl, "Connected");
+            lv_obj_set_style_text_font(status_lbl, &arimo_14, 0);
+            lv_obj_set_style_text_color(status_lbl, lv_color_hex(0x00FF00), 0);
+            lv_obj_align(status_lbl, LV_ALIGN_BOTTOM_LEFT, 35, -5);
+        }
+
+        // Connect button (disabled if already connected)
+        lv_obj_t *conn_btn = lv_btn_create(item);
+        lv_obj_set_size(conn_btn, 85, 45);
+        lv_obj_align(conn_btn, LV_ALIGN_RIGHT_MID, -65, 0);
+        
+        if (is_connected) {
+            lv_obj_set_style_bg_color(conn_btn, lv_color_hex(0x555555), 0);  // Gray if connected
+            lv_obj_add_state(conn_btn, LV_STATE_DISABLED);
+        } else {
+            lv_obj_set_style_bg_color(conn_btn, lv_color_hex(0x0066CC), 0);
+            lv_obj_set_user_data(conn_btn, strdup(list->networks[i].ssid));
+            lv_obj_add_event_cb(conn_btn, wifi_saved_item_connect_cb, LV_EVENT_CLICKED, NULL);
+        }
+        
+        lv_obj_t *conn_lbl = lv_label_create(conn_btn);
+        lv_label_set_text(conn_lbl, "Connect");
+        lv_obj_set_style_text_font(conn_lbl, &arimo_14, 0);
+        lv_obj_center(conn_lbl);
+
+        // Delete button
+        lv_obj_t *del_btn = lv_btn_create(item);
+        lv_obj_set_size(del_btn, 50, 45);
+        lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+        lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xCC0000), 0);
+        lv_obj_set_user_data(del_btn, strdup(list->networks[i].ssid));
+        lv_obj_add_event_cb(del_btn, wifi_saved_item_delete_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *del_lbl = lv_label_create(del_btn);
+        lv_label_set_text(del_lbl, LV_SYMBOL_CLOSE);
+        lv_obj_set_style_text_font(del_lbl, &arimo_20, 0);
+        lv_obj_center(del_lbl);
+    }
+
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Create System Info screen
+ */
+static void create_sysinfo_screen(lv_obj_t *parent)
+{
+    sysinfo_cont = lv_obj_create(parent);
+    lv_obj_set_size(sysinfo_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(sysinfo_cont, lv_color_hex(0x000000), 0);
+    lv_obj_set_style_border_width(sysinfo_cont, 0, 0);
+    lv_obj_set_style_pad_all(sysinfo_cont, 10, 0);
+    lv_obj_add_flag(sysinfo_cont, LV_OBJ_FLAG_HIDDEN);
+
+    // Back button
+    lv_obj_t *back_btn = lv_btn_create(sysinfo_cont);
+    lv_obj_set_size(back_btn, 60, 40);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_add_event_cb(back_btn, sysinfo_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back_btn);
+    lv_label_set_text(back_lbl, "<");
+    lv_obj_set_style_text_font(back_lbl, &arimo_20, 0);
+    lv_obj_center(back_lbl);
+
+    // Title
+    lv_obj_t *title = lv_label_create(sysinfo_cont);
+    lv_label_set_text(title, "System Information");
+    lv_obj_set_style_text_font(title, &arimo_24, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+
+    // Scrollable container for labels
+    lv_obj_t *scroll_cont = lv_obj_create(sysinfo_cont);
+    lv_obj_set_size(scroll_cont, LV_PCT(100), LV_PCT(85));
+    lv_obj_align(scroll_cont, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(scroll_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(scroll_cont, 0, 0);
+    lv_obj_set_flex_flow(scroll_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(scroll_cont, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+
+    // Hardware section
+    lv_obj_t *hw_header = lv_label_create(scroll_cont);
+    lv_label_set_text(hw_header, "Hardware:");
+    lv_obj_set_style_text_font(hw_header, &arimo_20, 0);
+    lv_obj_set_style_text_color(hw_header, lv_color_hex(0x00FF00), 0);
+
+    sysinfo_chip_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_chip_label, "Chip: Loading...");
+    lv_obj_set_style_text_font(sysinfo_chip_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_chip_label, lv_color_white(), 0);
+
+    // Memory section
+    lv_obj_t *mem_header = lv_label_create(scroll_cont);
+    lv_label_set_text(mem_header, "\nMemory:");
+    lv_obj_set_style_text_font(mem_header, &arimo_20, 0);
+    lv_obj_set_style_text_color(mem_header, lv_color_hex(0x00FF00), 0);
+
+    sysinfo_ram_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_ram_label, "RAM: Loading...");
+    lv_obj_set_style_text_font(sysinfo_ram_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_ram_label, lv_color_white(), 0);
+
+    sysinfo_ram_min_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_ram_min_label, "Min Free: Loading...");
+    lv_obj_set_style_text_font(sysinfo_ram_min_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_ram_min_label, lv_color_white(), 0);
+
+    sysinfo_psram_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_psram_label, "PSRAM: Loading...");
+    lv_obj_set_style_text_font(sysinfo_psram_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_psram_label, lv_color_white(), 0);
+
+    // System section
+    lv_obj_t *sys_header = lv_label_create(scroll_cont);
+    lv_label_set_text(sys_header, "\nSystem:");
+    lv_obj_set_style_text_font(sys_header, &arimo_20, 0);
+    lv_obj_set_style_text_color(sys_header, lv_color_hex(0x00FF00), 0);
+
+    sysinfo_uptime_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_uptime_label, "Uptime: Loading...");
+    lv_obj_set_style_text_font(sysinfo_uptime_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_uptime_label, lv_color_white(), 0);
+
+    sysinfo_versions_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_versions_label, "Versions: Loading...");
+    lv_obj_set_style_text_font(sysinfo_versions_label, &arimo_14, 0);
+    lv_obj_set_style_text_color(sysinfo_versions_label, lv_color_white(), 0);
+
+    // About section
+    lv_obj_t *about_header = lv_label_create(scroll_cont);
+    lv_label_set_text(about_header, "\nAbout:");
+    lv_obj_set_style_text_font(about_header, &arimo_20, 0);
+    lv_obj_set_style_text_color(about_header, lv_color_hex(0x00FF00), 0);
+
+    sysinfo_author_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_author_label, "Author: Loading...");
+    lv_obj_set_style_text_font(sysinfo_author_label, &arimo_16, 0);
+    lv_obj_set_style_text_color(sysinfo_author_label, lv_color_white(), 0);
+
+    sysinfo_build_label = lv_label_create(scroll_cont);
+    lv_label_set_text(sysinfo_build_label, "Built: Loading...");
+    lv_obj_set_style_text_font(sysinfo_build_label, &arimo_14, 0);
+    lv_obj_set_style_text_color(sysinfo_build_label, lv_color_white(), 0);
+}
+
+/**
+ * @brief Update System Info screen with new data
+ */
+static void update_sysinfo_screen(const struct view_data_system_info *info)
+{
+    if (!info) return;
+
+    lv_port_sem_take();
+
+    // Hardware
+    char buf[128];
+    snprintf(buf, sizeof(buf), "Chip: %s (%u cores @ %lu MHz)", 
+            info->chip_model, info->cpu_cores, info->cpu_freq_mhz);
+    lv_label_set_text(sysinfo_chip_label, buf);
+
+    // Memory
+    snprintf(buf, sizeof(buf), "RAM: %lu KB free / %lu KB total", 
+            info->heap_free / 1024, info->heap_total / 1024);
+    lv_label_set_text(sysinfo_ram_label, buf);
+
+    snprintf(buf, sizeof(buf), "Min Free: %lu KB", info->heap_min_free / 1024);
+    lv_label_set_text(sysinfo_ram_min_label, buf);
+
+    if (info->psram_total > 0) {
+        snprintf(buf, sizeof(buf), "PSRAM: %lu MB free / %lu MB total", 
+                info->psram_free / (1024*1024), info->psram_total / (1024*1024));
+    } else {
+        snprintf(buf, sizeof(buf), "PSRAM: Not available");
+    }
+    lv_label_set_text(sysinfo_psram_label, buf);
+
+    // System
+    uint32_t days = info->uptime_seconds / 86400;
+    uint32_t hours = (info->uptime_seconds % 86400) / 3600;
+    uint32_t mins = (info->uptime_seconds % 3600) / 60;
+
+    if (days > 0) {
+        snprintf(buf, sizeof(buf), "Uptime: %lud %luh %lum", days, hours, mins);
+    } else {
+        snprintf(buf, sizeof(buf), "Uptime: %luh %lum", hours, mins);
+    }
+    lv_label_set_text(sysinfo_uptime_label, buf);
+
+    snprintf(buf, sizeof(buf), "App: %s | IDF: %s", 
+            info->app_version, info->idf_version);
+    lv_label_set_text(sysinfo_versions_label, buf);
+
+    // About
+    snprintf(buf, sizeof(buf), "Author: %s", info->author);
+    lv_label_set_text(sysinfo_author_label, buf);
+
+    snprintf(buf, sizeof(buf), "Built: %s %s", 
+            info->compile_date, info->compile_time);
+    lv_label_set_text(sysinfo_build_label, buf);
+
+    lv_port_sem_give();
 }
 
 /**
@@ -2072,8 +2666,13 @@ static void create_settings_screen(lv_obj_t *parent)
     // Create WiFi Screens (Hidden)
     create_wifi_screen(settings_screen);
     create_wifi_password_screen(settings_screen);
+    create_wifi_saved_screen(settings_screen);
+    create_wifi_add_screen(settings_screen);
     
-    // Main menu: two buttons only
+    // Create System Info Screen (Hidden)
+    create_sysinfo_screen(settings_screen);
+    
+    // Main menu: three buttons
     lv_obj_t *btn_wifi = lv_btn_create(settings_main_cont);
     lv_obj_set_size(btn_wifi, LV_PCT(90), 55);
     lv_obj_align(btn_wifi, LV_ALIGN_TOP_MID, 0, 30);
@@ -2091,6 +2690,16 @@ static void create_settings_screen(lv_obj_t *parent)
     lv_label_set_text(lbl_display, "Display");
     lv_obj_set_style_text_font(lbl_display, &arimo_20, 0);
     lv_obj_center(lbl_display);
+
+    // System Info button
+    lv_obj_t *btn_sysinfo = lv_btn_create(settings_main_cont);
+    lv_obj_set_size(btn_sysinfo, LV_PCT(90), 55);
+    lv_obj_align(btn_sysinfo, LV_ALIGN_TOP_MID, 0, 170);
+    lv_obj_add_event_cb(btn_sysinfo, sysinfo_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_sysinfo = lv_label_create(btn_sysinfo);
+    lv_label_set_text(lbl_sysinfo, "System Info");
+    lv_obj_set_style_text_font(lbl_sysinfo, &arimo_20, 0);
+    lv_obj_center(lbl_sysinfo);
 
     // Display settings submenu (hidden by default)
     display_settings_cont = lv_obj_create(settings_screen);
@@ -2242,6 +2851,11 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             update_wifi_list(list);
             break;
         }
+        case VIEW_EVENT_WIFI_SAVED_LIST: {
+            const struct view_data_wifi_saved_list *list = (const struct view_data_wifi_saved_list *)event_data;
+            update_wifi_saved_list(list);
+            break;
+        }
         case VIEW_EVENT_WIFI_CONNECT_RET: {
              // struct view_data_wifi_connet_ret_msg *msg = (struct view_data_wifi_connet_ret_msg *)event_data;
              // TODO: Show result to user
@@ -2250,6 +2864,11 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
         case VIEW_EVENT_DISPLAY_CFG: {
             const struct view_data_display *cfg = (const struct view_data_display *)event_data;
             update_display_settings(cfg);
+            break;
+        }
+        case VIEW_EVENT_SYSTEM_INFO_UPDATE: {
+            const struct view_data_system_info *info = (const struct view_data_system_info *)event_data;
+            update_sysinfo_screen(info);
             break;
         }
         default:
@@ -2367,10 +2986,16 @@ int indicator_view_init(void)
                                             VIEW_EVENT_WIFI_LIST,
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_WIFI_SAVED_LIST,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_WIFI_CONNECT_RET,
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_DISPLAY_CFG,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_SYSTEM_INFO_UPDATE,
                                             view_event_handler, NULL, NULL);
     // Register time event handler for footer updates
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,

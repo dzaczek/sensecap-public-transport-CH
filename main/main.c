@@ -5,6 +5,11 @@
 #include "lv_port.h"
 #include "esp_event.h"
 #include "esp_event_base.h"
+#include "esp_system.h"
+#include "esp_chip_info.h"
+#include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include "esp_private/esp_clk.h"
 
 #include "indicator_model.h"
 #include "indicator_view.h"
@@ -32,11 +37,71 @@ ESP_EVENT_DEFINE_BASE(VIEW_EVENT_BASE);
 esp_event_loop_handle_t view_event_handle;
 
 /**
- * @brief Task to periodically update settings screen
+ * @brief Collect system information for diagnostics screen
+ */
+static void __collect_system_info(struct view_data_system_info *info)
+{
+    if (!info) {
+        return;
+    }
+    
+    memset(info, 0, sizeof(struct view_data_system_info));
+    
+    // Memory information
+    info->heap_total = heap_caps_get_total_size(MALLOC_CAP_DEFAULT);
+    info->heap_free = esp_get_free_heap_size();
+    info->heap_min_free = esp_get_minimum_free_heap_size();
+    
+    // PSRAM information (ESP32-S3 typically has PSRAM)
+    info->psram_total = heap_caps_get_total_size(MALLOC_CAP_SPIRAM);
+    info->psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    
+    // System uptime
+    info->uptime_seconds = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+    
+    // Chip information
+    esp_chip_info_t chip_info;
+    esp_chip_info(&chip_info);
+    
+    // Chip model
+    #if CONFIG_IDF_TARGET_ESP32
+        snprintf(info->chip_model, sizeof(info->chip_model), "ESP32");
+    #elif CONFIG_IDF_TARGET_ESP32S2
+        snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-S2");
+    #elif CONFIG_IDF_TARGET_ESP32S3
+        snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-S3");
+    #elif CONFIG_IDF_TARGET_ESP32C3
+        snprintf(info->chip_model, sizeof(info->chip_model), "ESP32-C3");
+    #else
+        snprintf(info->chip_model, sizeof(info->chip_model), "Unknown");
+    #endif
+    
+    info->cpu_cores = chip_info.cores;
+    
+    // CPU frequency (convert Hz to MHz)
+    info->cpu_freq_mhz = esp_clk_cpu_freq() / 1000000;
+    
+    // ESP-IDF version
+    snprintf(info->idf_version, sizeof(info->idf_version), "%s", IDF_VER);
+    
+    // Application version (from VERSION define)
+    snprintf(info->app_version, sizeof(info->app_version), "%s", VERSION);
+    
+    // Author
+    snprintf(info->author, sizeof(info->author), "Jacek Zaleski");
+    
+    // Compilation date and time
+    snprintf(info->compile_date, sizeof(info->compile_date), "%s", __DATE__);
+    snprintf(info->compile_time, sizeof(info->compile_time), "%s", __TIME__);
+}
+
+/**
+ * @brief Task to periodically update settings and system info screens
  */
 static void settings_update_task(void *arg)
 {
     struct view_data_settings settings = {0};
+    struct view_data_system_info sys_info = {0};
     
     while (1) {
         // Get WiFi status
@@ -55,9 +120,16 @@ static void settings_update_task(void *arg)
         settings.brightness = current_disp_cfg.brightness;
         settings.sleep_timeout_min = current_disp_cfg.sleep_mode_time_min;
         
-        // Post update event
+        // Collect system diagnostics information
+        __collect_system_info(&sys_info);
+        
+        // Post settings update event
         esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SETTINGS_UPDATE,
                          &settings, sizeof(settings), portMAX_DELAY);
+        
+        // Post system info update event (for diagnostics screen)
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SYSTEM_INFO_UPDATE,
+                         &sys_info, sizeof(sys_info), portMAX_DELAY);
         
         vTaskDelay(pdMS_TO_TICKS(5000));  // Update every 5 seconds
     }

@@ -17,6 +17,7 @@ enum start_screen {
 };
 
 #define WIFI_SCAN_LIST_SIZE  15
+#define MAX_SAVED_NETWORKS   5   // Maximum number of saved WiFi networks
 #define MAX_DEPARTURES 50
 #define MAX_BUS_LINES 10
 #define MAX_TRAIN_LINES 20
@@ -35,6 +36,21 @@ struct view_data_wifi_config {
     char    ssid[32];
     uint8_t password[64];
     bool    have_password;
+};
+
+/** Saved WiFi network (for multi-network management) */
+struct view_data_wifi_saved {
+    char    ssid[32];
+    uint8_t password[64];
+    bool    have_password;
+    int8_t  priority;  // 0 = highest priority, used for auto-connect order
+    bool    valid;     // Is this slot used?
+};
+
+/** List of all saved WiFi networks */
+struct view_data_wifi_saved_list {
+    struct view_data_wifi_saved networks[MAX_SAVED_NETWORKS];
+    int count;         // Number of valid saved networks
 };
 
 struct view_data_wifi_item {
@@ -187,6 +203,24 @@ struct view_data_refresh_config {
     int day_end_hour;              // Day mode end hour (default: 21)
 };
 
+// System Info (for diagnostics screen)
+struct view_data_system_info {
+    uint32_t heap_total;          // Total heap size (bytes)
+    uint32_t heap_free;           // Current free heap (bytes)
+    uint32_t heap_min_free;       // Minimum free heap ever (bytes) - good for leak detection
+    uint32_t psram_total;         // Total PSRAM size (bytes)
+    uint32_t psram_free;          // Current free PSRAM (bytes)
+    uint32_t uptime_seconds;      // System uptime in seconds
+    char     chip_model[32];      // Chip model (e.g., "ESP32-S3")
+    uint8_t  cpu_cores;           // Number of CPU cores
+    uint32_t cpu_freq_mhz;        // CPU frequency in MHz
+    char     idf_version[16];     // ESP-IDF version
+    char     app_version[16];     // Application version
+    char     author[32];          // Application author
+    char     compile_date[16];    // Compilation date
+    char     compile_time[16];    // Compilation time
+};
+
 // View events
 enum {
     VIEW_EVENT_SCREEN_START = 0,
@@ -199,7 +233,12 @@ enum {
     VIEW_EVENT_WIFI_CONNECT,
     VIEW_EVENT_WIFI_CONNECT_RET,
     VIEW_EVENT_WIFI_CFG_DELETE,
-    VIEW_EVENT_WIFI_SET_BACKUP,   /* struct view_data_wifi_config * – save as backup network */
+    VIEW_EVENT_WIFI_SET_BACKUP,         /* struct view_data_wifi_config * – save as backup network */
+    VIEW_EVENT_WIFI_SAVED_LIST_REQ,     /* NULL - request list of saved networks */
+    VIEW_EVENT_WIFI_SAVED_LIST,         /* struct view_data_wifi_saved_list * - list of saved networks */
+    VIEW_EVENT_WIFI_SAVE_NETWORK,       /* struct view_data_wifi_config * - save new network to list */
+    VIEW_EVENT_WIFI_DELETE_NETWORK,     /* char* ssid - delete network from saved list */
+    VIEW_EVENT_WIFI_CONNECT_SAVED,      /* char* ssid - connect to saved network by SSID */
     
     VIEW_EVENT_TIME_CFG_UPDATE,
     VIEW_EVENT_TIME_CFG_APPLY,
@@ -218,6 +257,7 @@ enum {
     VIEW_EVENT_BUS_DETAILS_UPDATE,      // struct view_data_bus_details
     VIEW_EVENT_BUS_DETAILS_REQ,         // char* journey_name - request details
     VIEW_EVENT_SETTINGS_UPDATE,         // struct view_data_settings
+    VIEW_EVENT_SYSTEM_INFO_UPDATE,      // struct view_data_system_info - system diagnostics info
     
     VIEW_EVENT_SHUTDOWN,
     VIEW_EVENT_FACTORY_RESET,

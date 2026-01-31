@@ -190,31 +190,8 @@ esp_err_t network_manager_wifi_connect(const char *ssid, const char *password)
 
 esp_err_t network_manager_get_wifi_status(struct view_data_wifi_st *status)
 {
-    if (!status) return ESP_ERR_INVALID_ARG;
-    
-    // Get status from indicator_wifi module via event system
-    // For now, we'll use a simple approach - check WiFi connection
-    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (!netif) {
-        memset(status, 0, sizeof(*status));
-        return ESP_FAIL;
-    }
-    
-    wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK) {
-        status->is_connected = true;
-        strncpy(status->ssid, (char*)ap_info.ssid, sizeof(status->ssid) - 1);
-        status->rssi = ap_info.rssi;
-    } else {
-        status->is_connected = false;
-    }
-    
-    // Check if we have IP (network connectivity)
-    esp_netif_ip_info_t ip_info;
-    status->is_network = (esp_netif_get_ip_info(netif, &ip_info) == ESP_OK);
-    status->is_connecting = false;
-    
-    return ESP_OK;
+    // Delegate to indicator_wifi - single source of truth for WiFi status
+    return indicator_wifi_get_status(status);
 }
 
 esp_err_t network_manager_ping(const char *host)

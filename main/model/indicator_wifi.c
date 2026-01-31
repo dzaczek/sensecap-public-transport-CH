@@ -14,18 +14,24 @@
 #include "lwip/sockets.h"
 #include "esp_event.h"
 #include "ping/ping_sock.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT      BIT1
 #define WIFI_BACKUP_STORAGE "wifi-backup"
+#define WIFI_SAVED_NETWORKS_STORAGE "wifi-saved-networks"
 #define WIFI_BACKUP_FALLBACK_MS (2 * 60 * 1000)
 
 struct indicator_wifi
 {
     struct view_data_wifi_st  st;
     bool is_cfg;
-    int wifi_reconnect_cnt;  
+    int wifi_reconnect_cnt;
+    char last_connected_ssid[32];       // SSID ostatnio połączonej sieci
+    char last_connected_password[64];   // Hasło ostatnio połączonej sieci
+    bool last_had_password;             // Czy ostatnia sieć miała hasło
 };
 
 static struct indicator_wifi _g_wifi_model;
@@ -37,14 +43,20 @@ static SemaphoreHandle_t   __g_net_check_sem;
 static int s_retry_num = 0;
 static int wifi_retry_max  = 3;
 static bool __g_ping_done = true;
-static TimerHandle_t backup_fallback_timer = NULL;
-
 
 static EventGroupHandle_t __wifi_event_group;
 
 static const char *TAG = "wifi-model";
 
 static int min(int a, int b) { return (a < b) ? a : b; }
+
+// Forward declarations for new multi-network functions
+static esp_err_t __wifi_saved_networks_load(struct view_data_wifi_saved_list *list);
+static esp_err_t __wifi_saved_networks_save(const struct view_data_wifi_saved_list *list);
+static esp_err_t __wifi_saved_network_add(const char *ssid, const char *password, bool have_password);
+static esp_err_t __wifi_saved_network_delete(const char *ssid);
+static bool __wifi_saved_network_find(const char *ssid, struct view_data_wifi_saved *out_network);
+static void __wifi_try_next_saved_network(void);
 
 static void __wifi_st_set( struct view_data_wifi_st *p_st )
 {
@@ -81,9 +93,6 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
         }
         case WIFI_EVENT_STA_CONNECTED: {
             ESP_LOGI(TAG, "wifi event: WIFI_EVENT_STA_CONNECTED");
-            if (backup_fallback_timer) {
-                xTimerStop(backup_fallback_timer, 0);
-            }
             wifi_event_sta_connected_t *event = (wifi_event_sta_connected_t*) event_data;
             struct view_data_wifi_st st;
 
@@ -94,6 +103,23 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
             st.is_connected = true;
             st.is_connecting = false;
             __wifi_st_set(&st);
+            
+            // Auto-save: Automatycznie zapisz sieć do listy po udanym połączeniu
+            if (_g_wifi_model.last_connected_ssid[0] != '\0') {
+                const char *pwd = _g_wifi_model.last_had_password ? 
+                                 _g_wifi_model.last_connected_password : NULL;
+                esp_err_t save_result = __wifi_saved_network_add(
+                    _g_wifi_model.last_connected_ssid, 
+                    pwd, 
+                    _g_wifi_model.last_had_password
+                );
+                if (save_result == ESP_OK) {
+                    ESP_LOGI(TAG, "Auto-saved network: %s", _g_wifi_model.last_connected_ssid);
+                } else if (save_result == ESP_FAIL) {
+                    ESP_LOGW(TAG, "Network list full, could not auto-save: %s", 
+                            _g_wifi_model.last_connected_ssid);
+                }
+            }
             
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_ST, &st, sizeof(struct view_data_wifi_st ), portMAX_DELAY);
             
@@ -123,12 +149,11 @@ static void __wifi_event_handler(void* arg, esp_event_base_t event_base,
                 
                 struct view_data_wifi_connet_ret_msg msg;
                 msg.ret = 0;
-                strcpy(msg.msg, "Connection failure");
+                strcpy(msg.msg, "Connection failure, trying next network...");
                 esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_CONNECT_RET, &msg, sizeof(msg), portMAX_DELAY);
-                /* Start 2-min timer to try backup network */
-                if (backup_fallback_timer) {
-                    xTimerReset(backup_fallback_timer, 0);
-                }
+                
+                /* Immediately try next saved network instead of waiting 2 minutes */
+                __wifi_try_next_saved_network();
             }
             break;
         }
@@ -181,12 +206,19 @@ static int __wifi_connect(const char *p_ssid, const char *p_password, int retry_
     wifi_config_t wifi_config = {0};
     strlcpy((char *)wifi_config.sta.ssid, p_ssid, sizeof(wifi_config.sta.ssid));
     ESP_LOGI(TAG, "ssid: %s", p_ssid);
+    
+    // Zapamiętaj credentials dla auto-save po udanym połączeniu
+    strlcpy(_g_wifi_model.last_connected_ssid, p_ssid, sizeof(_g_wifi_model.last_connected_ssid));
     if( p_password ) {
         ESP_LOGI(TAG, "password: %s", p_password);
         strlcpy((char *)wifi_config.sta.password, p_password, sizeof(wifi_config.sta.password));
+        strlcpy(_g_wifi_model.last_connected_password, p_password, sizeof(_g_wifi_model.last_connected_password));
         wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK; //todo
+        _g_wifi_model.last_had_password = true;
     } else {
         wifi_config.sta.threshold.authmode = WIFI_AUTH_OPEN;
+        memset(_g_wifi_model.last_connected_password, 0, sizeof(_g_wifi_model.last_connected_password));
+        _g_wifi_model.last_had_password = false;
     }
     wifi_config.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;
 
@@ -225,25 +257,191 @@ static void __wifi_cfg_restore(void)
 }
 
 /**
- * @brief Timer callback: after 2 min without primary, try backup network from NVS
+ * @brief Load saved networks list from NVS
  */
-static void backup_fallback_timer_cb(TimerHandle_t xTimer)
+static esp_err_t __wifi_saved_networks_load(struct view_data_wifi_saved_list *list)
 {
-    struct view_data_wifi_config backup;
-    size_t len = sizeof(backup);
-    if (indicator_storage_read(WIFI_BACKUP_STORAGE, &backup, &len) != ESP_OK) {
-        ESP_LOGI(TAG, "No backup network stored");
-        return;
+    if (!list) {
+        return ESP_ERR_INVALID_ARG;
     }
-    if (backup.ssid[0] == '\0') {
-        ESP_LOGI(TAG, "Backup SSID empty");
-        return;
-    }
-    ESP_LOGI(TAG, "Trying backup network: %s", backup.ssid);
-    if (backup.have_password) {
-        __wifi_connect(backup.ssid, (const char *)backup.password, 3);
+    
+    size_t len = sizeof(struct view_data_wifi_saved_list);
+    esp_err_t ret = indicator_storage_read(WIFI_SAVED_NETWORKS_STORAGE, list, &len);
+    
+    if (ret == ESP_OK && len == sizeof(struct view_data_wifi_saved_list)) {
+        ESP_LOGI(TAG, "Loaded %d saved networks from NVS", list->count);
+        return ESP_OK;
+    } else if (ret == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "No saved networks found, initializing empty list");
+        memset(list, 0, sizeof(struct view_data_wifi_saved_list));
+        return ESP_OK;
     } else {
-        __wifi_connect(backup.ssid, NULL, 3);
+        ESP_LOGE(TAG, "Failed to load saved networks: %d", ret);
+        memset(list, 0, sizeof(struct view_data_wifi_saved_list));
+        return ret;
+    }
+}
+
+/**
+ * @brief Save networks list to NVS
+ */
+static esp_err_t __wifi_saved_networks_save(const struct view_data_wifi_saved_list *list)
+{
+    if (!list) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    esp_err_t ret = indicator_storage_write(WIFI_SAVED_NETWORKS_STORAGE, 
+                                           (void *)list, 
+                                           sizeof(struct view_data_wifi_saved_list));
+    if (ret == ESP_OK) {
+        ESP_LOGI(TAG, "Saved %d networks to NVS", list->count);
+    } else {
+        ESP_LOGE(TAG, "Failed to save networks: %d", ret);
+    }
+    return ret;
+}
+
+/**
+ * @brief Add or update a network in saved list
+ * @return ESP_OK if added/updated, ESP_FAIL if list is full and network not found
+ */
+static esp_err_t __wifi_saved_network_add(const char *ssid, const char *password, bool have_password)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    struct view_data_wifi_saved_list list;
+    __wifi_saved_networks_load(&list);
+    
+    // Check if network already exists (update password if it does)
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (list.networks[i].valid && strcmp(list.networks[i].ssid, ssid) == 0) {
+            ESP_LOGI(TAG, "Updating existing network: %s", ssid);
+            list.networks[i].have_password = have_password;
+            if (have_password && password) {
+                strlcpy((char *)list.networks[i].password, password, sizeof(list.networks[i].password));
+            }
+            return __wifi_saved_networks_save(&list);
+        }
+    }
+    
+    // Find first empty slot
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (!list.networks[i].valid) {
+            ESP_LOGI(TAG, "Adding new network at slot %d: %s", i, ssid);
+            strlcpy(list.networks[i].ssid, ssid, sizeof(list.networks[i].ssid));
+            list.networks[i].have_password = have_password;
+            if (have_password && password) {
+                strlcpy((char *)list.networks[i].password, password, sizeof(list.networks[i].password));
+            }
+            list.networks[i].priority = i;
+            list.networks[i].valid = true;
+            list.count++;
+            return __wifi_saved_networks_save(&list);
+        }
+    }
+    
+    ESP_LOGW(TAG, "Saved networks list is full (%d networks)", MAX_SAVED_NETWORKS);
+    return ESP_FAIL;
+}
+
+/**
+ * @brief Delete a network from saved list by SSID
+ */
+static esp_err_t __wifi_saved_network_delete(const char *ssid)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    struct view_data_wifi_saved_list list;
+    __wifi_saved_networks_load(&list);
+    
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (list.networks[i].valid && strcmp(list.networks[i].ssid, ssid) == 0) {
+            ESP_LOGI(TAG, "Deleting network: %s", ssid);
+            memset(&list.networks[i], 0, sizeof(struct view_data_wifi_saved));
+            list.count--;
+            return __wifi_saved_networks_save(&list);
+        }
+    }
+    
+    ESP_LOGW(TAG, "Network not found in saved list: %s", ssid);
+    return ESP_ERR_NOT_FOUND;
+}
+
+/**
+ * @brief Find saved network by SSID
+ */
+static bool __wifi_saved_network_find(const char *ssid, struct view_data_wifi_saved *out_network)
+{
+    if (!ssid || ssid[0] == '\0') {
+        return false;
+    }
+    
+    struct view_data_wifi_saved_list list;
+    __wifi_saved_networks_load(&list);
+    
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (list.networks[i].valid && strcmp(list.networks[i].ssid, ssid) == 0) {
+            if (out_network) {
+                memcpy(out_network, &list.networks[i], sizeof(struct view_data_wifi_saved));
+            }
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * @brief Try to connect to next available saved network
+ * 
+ * Simplified algorithm (no scan to avoid stack overflow in sys_evt task):
+ * 1. Load saved networks list from NVS
+ * 2. Try networks in priority order (0 = highest priority)
+ * 
+ * Note: Scanning is skipped because this function is called from WiFi event handler
+ * which runs in sys_evt task with limited stack. Full scan-based selection would
+ * require calling this from a separate task with larger stack.
+ */
+static void __wifi_try_next_saved_network(void)
+{
+    ESP_LOGI(TAG, "Attempting to connect to next saved network...");
+    
+    // Load saved networks
+    struct view_data_wifi_saved_list saved_list;
+    if (__wifi_saved_networks_load(&saved_list) != ESP_OK || saved_list.count == 0) {
+        ESP_LOGI(TAG, "No saved networks available");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "Found %d saved network(s)", saved_list.count);
+    
+    // Find network with highest priority (lowest priority number)
+    int best_priority = 255;
+    struct view_data_wifi_saved *best_network = NULL;
+    
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (!saved_list.networks[i].valid) continue;
+        
+        if (saved_list.networks[i].priority < best_priority) {
+            best_priority = saved_list.networks[i].priority;
+            best_network = &saved_list.networks[i];
+        }
+    }
+    
+    // Try to connect to highest priority network
+    if (best_network != NULL) {
+        ESP_LOGI(TAG, "Attempting to connect to saved network: %s (priority: %d)", 
+                best_network->ssid, best_network->priority);
+        
+        const char *pwd = best_network->have_password ? (const char *)best_network->password : NULL;
+        __wifi_connect(best_network->ssid, pwd, 3);
+    } else {
+        ESP_LOGI(TAG, "No valid saved networks found");
     }
 }
 
@@ -456,6 +654,57 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             }
             break;
         }
+        case VIEW_EVENT_WIFI_SAVED_LIST_REQ: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_WIFI_SAVED_LIST_REQ");
+            struct view_data_wifi_saved_list list;
+            __wifi_saved_networks_load(&list);
+            esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SAVED_LIST,
+                             &list, sizeof(list), portMAX_DELAY);
+            break;
+        }
+        case VIEW_EVENT_WIFI_SAVE_NETWORK: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_WIFI_SAVE_NETWORK");
+            struct view_data_wifi_config *p_cfg = (struct view_data_wifi_config *)event_data;
+            if (p_cfg && p_cfg->ssid[0]) {
+                const char *pwd = p_cfg->have_password ? (const char *)p_cfg->password : NULL;
+                __wifi_saved_network_add(p_cfg->ssid, pwd, p_cfg->have_password);
+                
+                // Send updated list back to UI
+                struct view_data_wifi_saved_list list;
+                __wifi_saved_networks_load(&list);
+                esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SAVED_LIST,
+                                 &list, sizeof(list), portMAX_DELAY);
+            }
+            break;
+        }
+        case VIEW_EVENT_WIFI_DELETE_NETWORK: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_WIFI_DELETE_NETWORK");
+            char *ssid = (char *)event_data;
+            if (ssid && ssid[0]) {
+                __wifi_saved_network_delete(ssid);
+                
+                // Send updated list back to UI
+                struct view_data_wifi_saved_list list;
+                __wifi_saved_networks_load(&list);
+                esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SAVED_LIST,
+                                 &list, sizeof(list), portMAX_DELAY);
+            }
+            break;
+        }
+        case VIEW_EVENT_WIFI_CONNECT_SAVED: {
+            ESP_LOGI(TAG, "event: VIEW_EVENT_WIFI_CONNECT_SAVED");
+            char *ssid = (char *)event_data;
+            if (ssid && ssid[0]) {
+                struct view_data_wifi_saved network;
+                if (__wifi_saved_network_find(ssid, &network)) {
+                    const char *pwd = network.have_password ? (const char *)network.password : NULL;
+                    __wifi_connect(network.ssid, pwd, 3);
+                } else {
+                    ESP_LOGW(TAG, "Saved network not found: %s", ssid);
+                }
+            }
+            break;
+        }
         case VIEW_EVENT_SHUTDOWN: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_SHUTDOWN");
             __wifi_shutdown();
@@ -469,6 +718,16 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
 static void __wifi_model_init(void)
 {
     memset(&_g_wifi_model, 0, sizeof(_g_wifi_model));
+}
+
+esp_err_t indicator_wifi_get_status(struct view_data_wifi_st *status)
+{
+    if (!status) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    __wifi_st_get(status);
+    return ESP_OK;
 }
 
 int indicator_wifi_init(void)
@@ -521,12 +780,26 @@ int indicator_wifi_init(void)
                                                             VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SET_BACKUP, 
                                                             __view_event_handler, NULL, NULL));
 
+    // Multi-network management handlers
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SAVED_LIST_REQ, 
+                                                            __view_event_handler, NULL, NULL));
+    
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SAVE_NETWORK, 
+                                                            __view_event_handler, NULL, NULL));
+    
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_WIFI_DELETE_NETWORK, 
+                                                            __view_event_handler, NULL, NULL));
+    
+    ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
+                                                            VIEW_EVENT_BASE, VIEW_EVENT_WIFI_CONNECT_SAVED, 
+                                                            __view_event_handler, NULL, NULL));
+
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_SHUTDOWN, 
                                                             __view_event_handler, NULL, NULL));
-
-    backup_fallback_timer = xTimerCreate("wifi_backup", pdMS_TO_TICKS(WIFI_BACKUP_FALLBACK_MS),
-                                         pdFALSE, NULL, backup_fallback_timer_cb);
 
     wifi_config_t wifi_cfg;
     esp_wifi_get_config(WIFI_IF_STA, &wifi_cfg);
