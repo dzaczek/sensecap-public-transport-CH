@@ -200,6 +200,18 @@ static void lv_port_disp_init(void)
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, buffer_size);
 
     lv_disp_drv_init(&disp_drv);
+    
+    /* IMPORTANT: Use physical panel dimensions from board config
+     * For RGB panels (ESP32-S3), brd->LCD_WIDTH/HEIGHT are the actual hardware dimensions.
+     * Do NOT swap these values programmatically - it breaks RGB timing synchronization.
+     * 
+     * For rotation, use LVGL's software rotation instead:
+     *   disp_drv.sw_rotate = 1;
+     *   disp_drv.rotated = LV_DISP_ROT_90;  // or 270
+     * Or call lv_disp_set_rotation(NULL, LV_DISP_ROT_90) after registration.
+     * 
+     * Note: sw_rotate is CPU-intensive. Best performance when physical orientation == UI orientation.
+     */
     disp_drv.hor_res = brd->LCD_WIDTH;
     disp_drv.ver_res = brd->LCD_HEIGHT;
     disp_drv.flush_cb = disp_flush;

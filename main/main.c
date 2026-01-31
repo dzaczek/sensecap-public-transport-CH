@@ -48,11 +48,12 @@ static void settings_update_task(void *arg)
         // Check API status (check if we can reach the API)
         settings.api_status = network_manager_is_connected();
         
-        // Get brightness (from display config if available)
-        settings.brightness = 50;  // Default, TODO: Load from storage
-        
-        // Get sleep timeout (from storage if needed)
-        settings.sleep_timeout_min = 0;  // TODO: Load from storage
+        // Get current display configuration (brightness & sleep settings)
+        // CRITICAL: Use actual values from display manager, don't overwrite user settings!
+        struct view_data_display current_disp_cfg;
+        indicator_display_cfg_get(&current_disp_cfg);
+        settings.brightness = current_disp_cfg.brightness;
+        settings.sleep_timeout_min = current_disp_cfg.sleep_mode_time_min;
         
         // Post update event
         esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SETTINGS_UPDATE,
@@ -168,8 +169,13 @@ void app_main(void)
         network_manager_get_wifi_status(&settings.wifi_status);
         network_manager_get_ip(settings.ip_address);
         settings.api_status = network_manager_is_connected();
-        settings.brightness = 50;
-        settings.sleep_timeout_min = 0;
+        
+        // Get current display configuration from display manager
+        struct view_data_display current_disp_cfg;
+        indicator_display_cfg_get(&current_disp_cfg);
+        settings.brightness = current_disp_cfg.brightness;
+        settings.sleep_timeout_min = current_disp_cfg.sleep_mode_time_min;
+        
         esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SETTINGS_UPDATE,
                           &settings, sizeof(settings), portMAX_DELAY);
     }

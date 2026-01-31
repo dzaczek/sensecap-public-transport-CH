@@ -257,12 +257,17 @@ esp_err_t bsp_lcd_init(void)
     ret_val |= esp_lcd_panel_init(panel_handle);
     esp_lcd_panel_invert_color(panel_handle, brd->LCD_COLOR_INV);
     esp_lcd_panel_set_gap(panel_handle, 0, 0);
+    
+    /* NOTE: For RGB panels on ESP32-S3, hardware swap_xy can cause timing conflicts.
+     * Physical LCD timings (HSYNC/VSYNC) are configured based on actual panel dimensions.
+     * Swapping dimensions programmatically breaks synchronization with RGB controller.
+     * For rotation, use LVGL software rotation (lv_disp_set_rotation) instead. */
     esp_lcd_panel_swap_xy(panel_handle, brd->LCD_SWAP_XY);
-    if (brd->LCD_SWAP_XY) {
-        brd->LCD_WIDTH = brd->LCD_WIDTH + brd->LCD_HEIGHT;
-        brd->LCD_HEIGHT = brd->LCD_WIDTH - brd->LCD_HEIGHT;
-        brd->LCD_WIDTH = brd->LCD_WIDTH - brd->LCD_HEIGHT;
-    }
+    
+    /* REMOVED: Dangerous modification of global board config structure
+     * This caused conflicts between physical LCD timings and LVGL buffer addressing.
+     * The LCD_WIDTH/LCD_HEIGHT must remain at physical panel resolution. */
+    
     esp_lcd_panel_mirror(panel_handle, brd->LCD_MIRROR_X, brd->LCD_MIRROR_Y);
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
     esp_lcd_panel_disp_on_off(panel_handle, true);
