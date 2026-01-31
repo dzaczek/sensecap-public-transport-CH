@@ -13,283 +13,276 @@
 #define LEDC_CHANNEL            LEDC_CHANNEL_0
 #define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
 #define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
-
-
-
-struct indicator_display
-{
-    struct view_data_display cfg;
-    bool timer_st;  // true, running , false:  stop
-    bool display_st;
-};
+#define LEDC_MAX_DUTY           ((1 << LEDC_DUTY_RES) - 1) // 8191 for 13-bit
 
 static const char *TAG = "display";
 
-static struct indicator_display __g_display_model;
-static SemaphoreHandle_t       __g_data_mutex;
-
-static esp_timer_handle_t      sleep_timer_handle;
-static SemaphoreHandle_t       __g_timer_mutex;
-
-static bool init_done_flag = false;
-static void __display_cfg_set(struct view_data_display *p_data )
+/**
+ * @brief Consolidated manager structure - single source of truth
+ */
+static struct {
+    struct view_data_display cfg;
+    esp_timer_handle_t sleep_timer;
+    bool timer_running;
+    bool display_on;
+    bool init_done;
+    SemaphoreHandle_t mutex;
+} g_mgr;
+/**
+ * @brief DRY: Single function to set hardware brightness (13-bit PWM)
+ * @param percent Brightness 1-99%
+ */
+static void __hw_set_brightness(uint8_t percent)
 {
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    memcpy( &__g_display_model.cfg, p_data, sizeof(struct view_data_display));
-    xSemaphoreGive(__g_data_mutex);
+    if (percent > 99) {
+        percent = 99;
+    } else if (percent < 1) {
+        percent = 1;
+    }
+
+    uint32_t duty = (LEDC_MAX_DUTY * percent) / 100;
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
 }
 
-static void __display_cfg_get(struct view_data_display *p_data )
+/**
+ * @brief Safely stop the sleep timer if running
+ */
+static void __timer_stop_locked(void)
 {
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    memcpy(p_data, &__g_display_model.cfg, sizeof(struct view_data_display));
-    xSemaphoreGive(__g_data_mutex);
+    if (g_mgr.timer_running) {
+        ESP_ERROR_CHECK(esp_timer_stop(g_mgr.sleep_timer));
+        g_mgr.timer_running = false;
+    }
 }
 
-static void __timer_st_set( bool st )
+/**
+ * @brief Restart sleep timer based on current config (call with mutex held)
+ */
+static void __timer_restart_locked(void)
 {
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    __g_display_model.timer_st = st;
-    xSemaphoreGive(__g_data_mutex);
+    __timer_stop_locked();
+
+    if (g_mgr.cfg.sleep_mode_en && g_mgr.cfg.sleep_mode_time_min > 0 && g_mgr.display_on) {
+        uint64_t timeout_us = (uint64_t)g_mgr.cfg.sleep_mode_time_min * 60 * 1000000;
+        ESP_ERROR_CHECK(esp_timer_start_once(g_mgr.sleep_timer, timeout_us));
+        g_mgr.timer_running = true;
+    }
 }
 
-static bool __timer_st_get(void)
+/**
+ * @brief Central function to control display power state
+ * @param on true = turn on with configured brightness, false = turn off
+ */
+static void __display_set_state(bool on)
 {
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    bool flag =  __g_display_model.timer_st;
-    xSemaphoreGive(__g_data_mutex);
-    return flag;
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    
+    if (on) {
+        __hw_set_brightness(g_mgr.cfg.brightness);
+        g_mgr.display_on = true;
+        __timer_restart_locked();
+    } else {
+        ledc_stop(LEDC_MODE, LEDC_CHANNEL, 0);
+        g_mgr.display_on = false;
+        __timer_stop_locked();
+    }
+    
+    xSemaphoreGive(g_mgr.mutex);
 }
 
-static void __display_st_set( bool st )
+/**
+ * @brief Initialize LEDC hardware for backlight control
+ */
+static void __hw_ledc_init(uint8_t initial_brightness)
 {
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    __g_display_model.display_st = st;
-    xSemaphoreGive(__g_data_mutex);
-}
-
-static bool __display_st_get(void)
-{
-    xSemaphoreTake(__g_data_mutex, portMAX_DELAY);
-    bool st =  __g_display_model.display_st;
-    xSemaphoreGive(__g_data_mutex);
-    return st;
-}
-
-
-static void __display_cfg_print(struct view_data_display *p_data )
-{
-    ESP_LOGI(TAG, "brightnes:%d, sleep_mode:%d, time:%d min",p_data->brightness, p_data->sleep_mode_en, p_data->sleep_mode_time_min );
-
-}
-
-
-
-static void __lcd_bl_init(uint8_t brightness)
-{
-    if(brightness > 99) {
-        brightness=99;
-    } else if( brightness < 1) {
-        brightness=1;
+    if (initial_brightness > 99) {
+        initial_brightness = 99;
+    } else if (initial_brightness < 1) {
+        initial_brightness = 1;
     }
 
     ledc_timer_config_t ledc_timer = {
         .speed_mode       = LEDC_MODE,
         .timer_num        = LEDC_TIMER,
         .duty_resolution  = LEDC_DUTY_RES,
-        .freq_hz          = LEDC_FREQUENCY,  // Set output frequency at 5 kHz
+        .freq_hz          = LEDC_FREQUENCY,
         .clk_cfg          = LEDC_AUTO_CLK
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
+    uint32_t initial_duty = (LEDC_MAX_DUTY * initial_brightness) / 100;
     ledc_channel_config_t ledc_channel = {
         .speed_mode     = LEDC_MODE,
         .channel        = LEDC_CHANNEL,
         .timer_sel      = LEDC_TIMER,
         .intr_type      = LEDC_INTR_DISABLE,
         .gpio_num       = LEDC_OUTPUT_IO,
-        .duty           =  (8192 - 1) * brightness/ 100, // Set duty to 0%
+        .duty           = initial_duty,
         .hpoint         = 0
     };
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
 
-static void __lcd_bl_set(int brightness )
-{   
-    if(brightness > 99) {
-        brightness=99;
-    } else if( brightness < 1) {
-        brightness=1;
-    }
-
-    uint32_t duty =(uint32_t) (8192 - 1) * brightness / 100.0;
-
-    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty));
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
-}
-
-static void __lcd_bl_on(void)
-{
-    struct view_data_display cfg;
-    __display_cfg_get(&cfg);
-    __lcd_bl_set(cfg.brightness);
-    __display_st_set(true);
-}
-
-static void __lcd_bl_off(void)
-{
-    ledc_stop( LEDC_MODE, LEDC_CHANNEL, 0);
-    __display_st_set(false);
-}
-
+/**
+ * @brief Sleep timer callback - turn off display and notify view
+ */
 static void __sleep_mode_timer_callback(void* arg)
 {
-    ESP_LOGI(TAG, "sleep mode, lcd bl off");
-    __lcd_bl_off();
-    __timer_st_set(false);
+    ESP_LOGI(TAG, "Sleep mode triggered - turning off display");
+    
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    ledc_stop(LEDC_MODE, LEDC_CHANNEL, 0);
+    g_mgr.display_on = false;
+    g_mgr.timer_running = false;
+    xSemaphoreGive(g_mgr.mutex);
 
-    bool st=0;
-    st = 0;
-    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_CTRL, &st, sizeof(st), portMAX_DELAY);
+    bool screen_state = false;
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_CTRL, 
+                      &screen_state, sizeof(screen_state), portMAX_DELAY);
 }
 
-static void __timer_stop(void)
-{
-    if(  __timer_st_get()) {
-        xSemaphoreTake(__g_timer_mutex, portMAX_DELAY);
-        ESP_ERROR_CHECK(esp_timer_stop(sleep_timer_handle));
-        xSemaphoreGive(__g_timer_mutex);
-        __timer_st_set(false);
-    }
-}
-
-static void __sleep_mode_restart(bool en, int min)
-{
-    __timer_stop();   
-    if( ! en  || min ==0) {
-        return;
-    }
-    __timer_st_set(true);
-    xSemaphoreTake(__g_timer_mutex, portMAX_DELAY);
-    ESP_ERROR_CHECK(esp_timer_start_once(sleep_timer_handle, (uint64_t) min *60 * 1000000 ));
-    xSemaphoreGive(__g_timer_mutex);
-}
-
-static void __sleep_mode_init( bool  sleep_mode_en, int sleep_mode_time_min)
+/**
+ * @brief Initialize sleep timer (does not start it)
+ */
+static void __sleep_timer_create(void)
 {
     const esp_timer_create_args_t timer_args = {
-            .callback = &__sleep_mode_timer_callback,
-            /* argument specified here will be passed to timer callback function */
-            .arg = (void*) sleep_timer_handle,
-            .name = "sleep mode"
+        .callback = &__sleep_mode_timer_callback,
+        .arg = NULL,
+        .name = "display_sleep"
     };
-    ESP_ERROR_CHECK( esp_timer_create(&timer_args, &sleep_timer_handle));
-    
-    __timer_st_set(false);
-    __sleep_mode_restart(sleep_mode_en, sleep_mode_time_min);
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &g_mgr.sleep_timer));
 }
 
 
-static void __display_cfg_save(struct view_data_display *p_data ) 
+/**
+ * @brief Save configuration to NVS (called outside critical section)
+ */
+static void __cfg_save_to_nvs(const struct view_data_display *p_cfg)
 {
-    esp_err_t ret = 0;
-    ret = indicator_storage_write(DISPLAY_CFG_STORAGE, (void *)p_data, sizeof(struct view_data_display));
-    if( ret != ESP_OK ) {
-        ESP_LOGI(TAG, "cfg write err:%d", ret);
+    esp_err_t ret = indicator_storage_write(DISPLAY_CFG_STORAGE, (void *)p_cfg, 
+                                           sizeof(struct view_data_display));
+    if (ret != ESP_OK) {
+        ESP_LOGI(TAG, "Config write error: %d", ret);
     } else {
-        ESP_LOGI(TAG, "cfg write successful");
+        ESP_LOGI(TAG, "Config saved: brightness=%d, sleep_mode=%d, time=%d min",
+                 p_cfg->brightness, p_cfg->sleep_mode_en, p_cfg->sleep_mode_time_min);
     }
 }
 
-
-static void __display_cfg_restore(void)
+/**
+ * @brief Restore configuration from NVS or use defaults
+ */
+static void __cfg_restore_from_nvs(void)
 {
-    esp_err_t ret = 0;
     struct view_data_display cfg;
-    
     size_t len = sizeof(cfg);
     
-    ret = indicator_storage_read(DISPLAY_CFG_STORAGE, (void *)&cfg, &len);
-    if( ret == ESP_OK  && len== (sizeof(cfg)) ) {
-        ESP_LOGI(TAG, "cfg read successful");
-        __display_cfg_set(&cfg);
+    esp_err_t ret = indicator_storage_read(DISPLAY_CFG_STORAGE, (void *)&cfg, &len);
+    
+    if (ret == ESP_OK && len == sizeof(cfg)) {
+        ESP_LOGI(TAG, "Config restored from NVS");
     } else {
-        // err or not find
-        if( ret == ESP_ERR_NVS_NOT_FOUND) {
-            ESP_LOGI(TAG, "cfg not find");
-        }else {
-            ESP_LOGI(TAG, "cfg read err:%d", ret);
-        } 
+        if (ret == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGI(TAG, "Config not found, using defaults");
+        } else {
+            ESP_LOGI(TAG, "Config read error: %d, using defaults", ret);
+        }
         
+        // Default configuration
         cfg.brightness = 80;
         cfg.sleep_mode_en = false;
         cfg.sleep_mode_time_min = 0;
-        __display_cfg_set(&cfg);
     }
+    
+    // Store in manager (short critical section)
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    memcpy(&g_mgr.cfg, &cfg, sizeof(cfg));
+    xSemaphoreGive(g_mgr.mutex);
 }
 
+/**
+ * @brief Event handler for view events
+ */
 static void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data)
 {
-    switch (id)
-    {
+    switch (id) {
         case VIEW_EVENT_BRIGHTNESS_UPDATE: {
-            int *p_brightness= (int *)event_data;
-            struct view_data_display cfg;
-
-            ESP_LOGI(TAG, "event: VIEW_EVENT_BRIGHTNESS_UPDATE, brightness:%d", *p_brightness);
-         
-            // Update brightness immediately (live preview)
-            __lcd_bl_set(*p_brightness);
-           
-            // Update in-memory config (but don't save yet - wait for APPLY)
-            __display_cfg_get(&cfg);
-            cfg.brightness=*p_brightness;
-            __display_cfg_set(&cfg);
+            // Live preview - update brightness only, don't save
+            int *p_brightness = (int *)event_data;
+            ESP_LOGI(TAG, "Brightness update (preview): %d", *p_brightness);
+            
+            xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+            g_mgr.cfg.brightness = *p_brightness;
+            __hw_set_brightness(*p_brightness);
+            xSemaphoreGive(g_mgr.mutex);
             break;
         }
+        
         case VIEW_EVENT_DISPLAY_CFG_APPLY: {
-
-            struct view_data_display * p_cfg = (struct view_data_display *)event_data;
-            ESP_LOGI(TAG, "event: VIEW_EVENT_DISPLAY_CFG_APPLY");
-            __display_cfg_print(p_cfg);
-
-            // Apply brightness immediately
-            __lcd_bl_set(p_cfg->brightness);
+            // Apply full configuration: save to NVS and restart timer
+            struct view_data_display *p_cfg = (struct view_data_display *)event_data;
+            ESP_LOGI(TAG, "Applying config: brightness=%d, sleep_mode=%d, time=%d min",
+                     p_cfg->brightness, p_cfg->sleep_mode_en, p_cfg->sleep_mode_time_min);
             
-            // Save to memory and NVS
-            __display_cfg_set(p_cfg);
-            __display_cfg_save(p_cfg);
+            // Update in-memory config and hardware (critical section)
+            xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+            memcpy(&g_mgr.cfg, p_cfg, sizeof(struct view_data_display));
+            __hw_set_brightness(p_cfg->brightness);
+            __timer_restart_locked();
+            xSemaphoreGive(g_mgr.mutex);
             
-            // Restart sleep timer with new settings
-            __sleep_mode_restart(p_cfg->sleep_mode_en, p_cfg->sleep_mode_time_min);
-            
-            ESP_LOGI(TAG, "Display configuration applied and saved successfully");
+            // Save to NVS (outside critical section)
+            __cfg_save_to_nvs(p_cfg);
             break;
         }
-    
-    default:
-        break;
+        
+        default:
+            break;
     }
-
-
 }
+/**
+ * @brief Initialize display manager module
+ */
 int indicator_display_init(void)
 {
-    struct view_data_display cfg;
-    __g_data_mutex  =  xSemaphoreCreateMutex();
-    __g_timer_mutex = xSemaphoreCreateMutex();
+    // Create single mutex for entire manager
+    g_mgr.mutex = xSemaphoreCreateMutex();
+    if (!g_mgr.mutex) {
+        ESP_LOGI(TAG, "Failed to create mutex");
+        return -1;
+    }
 
-    __display_cfg_restore();
+    // Restore configuration from NVS
+    __cfg_restore_from_nvs();
 
-    __display_cfg_get(&cfg);
+    // Initialize LEDC hardware
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    uint8_t initial_brightness = g_mgr.cfg.brightness;
+    xSemaphoreGive(g_mgr.mutex);
+    
+    __hw_ledc_init(initial_brightness);
+    
+    // Set initial state
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    g_mgr.display_on = true;
+    xSemaphoreGive(g_mgr.mutex);
 
-    __lcd_bl_init(cfg.brightness);
-    __display_st_set(true);
+    // Create sleep timer
+    __sleep_timer_create();
+    
+    // Start timer if sleep mode is enabled
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    struct view_data_display cfg_copy = g_mgr.cfg;
+    __timer_restart_locked();
+    xSemaphoreGive(g_mgr.mutex);
 
-    __sleep_mode_init(cfg.sleep_mode_en, cfg.sleep_mode_time_min);
+    // Notify view of current configuration (outside critical section)
+    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG, 
+                      &cfg_copy, sizeof(cfg_copy), portMAX_DELAY);
 
-    esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG, &cfg, sizeof(cfg), portMAX_DELAY);
-
+    // Register event handlers
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_BRIGHTNESS_UPDATE, 
                                                             __view_event_handler, NULL, NULL));
@@ -297,43 +290,67 @@ int indicator_display_init(void)
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                             VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG_APPLY, 
                                                             __view_event_handler, NULL, NULL));
-    init_done_flag = true;
+
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    g_mgr.init_done = true;
+    xSemaphoreGive(g_mgr.mutex);
+    
+    ESP_LOGI(TAG, "Display manager initialized");
     return 0;
 }
 
+/**
+ * @brief Restart sleep timer with current configuration
+ */
 int indicator_display_sleep_restart(void)
 {
-    if( !init_done_flag ) {
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    if (!g_mgr.init_done) {
+        xSemaphoreGive(g_mgr.mutex);
         return 0;
     }
-    struct view_data_display cfg;
-    __display_cfg_get(&cfg);
-    __sleep_mode_restart(cfg.sleep_mode_en, cfg.sleep_mode_time_min);
+    __timer_restart_locked();
+    xSemaphoreGive(g_mgr.mutex);
     return 0;
 }
 
+/**
+ * @brief Get current display state
+ */
 bool indicator_display_st_get(void)
 {
-    return __display_st_get();
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    bool state = g_mgr.display_on;
+    xSemaphoreGive(g_mgr.mutex);
+    return state;
 }
 
+/**
+ * @brief Turn on display and restart sleep timer
+ */
 int indicator_display_on(void)
 {
-   __lcd_bl_on();
-   indicator_display_sleep_restart();
-   return 0; 
-}
-
-int indicator_display_off(void)
-{
-    __lcd_bl_off();
-    __timer_stop();
+    __display_set_state(true);
     return 0;
 }
 
+/**
+ * @brief Turn off display and stop sleep timer
+ */
+int indicator_display_off(void)
+{
+    __display_set_state(false);
+    return 0;
+}
+
+/**
+ * @brief Get current display configuration
+ */
 void indicator_display_cfg_get(struct view_data_display *p_cfg)
 {
     if (p_cfg) {
-        __display_cfg_get(p_cfg);
+        xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+        memcpy(p_cfg, &g_mgr.cfg, sizeof(struct view_data_display));
+        xSemaphoreGive(g_mgr.mutex);
     }
 }
