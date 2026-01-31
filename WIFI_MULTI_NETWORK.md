@@ -1,97 +1,97 @@
 # WiFi Multi-Network Management & System Info
 
-## Przegląd zmian
+## Overview of Changes
 
-Rozbudowano system WiFi o zarządzanie wieloma zapisanymi sieciami oraz dodano menu diagnostyczne z informacjami o hardware'ie.
+The WiFi system has been extended with multi-saved-network management and a diagnostic menu with hardware information.
 
-### 1. Zarządzanie wieloma sieciami WiFi (Multi-SSID Profile Manager)
+### 1. Multi-Network WiFi Management (Multi-SSID Profile Manager)
 
-Użytkownik może teraz:
-- Zapisać do **5 różnych sieci WiFi** z hasłami
-- Przeglądać listę zapisanych sieci
-- Łączyć się z dowolną zapisaną siecią jednym kliknięciem
-- Usuwać niepotrzebne sieci z listy
-- Dodawać nowe sieci ręcznie (przycisk "+")
-- **NOWE:** Automatyczne próbowanie kolejnych sieci przy awarii połączenia (bez czekania 2 minut)
-- **NOWE:** Inteligentne skanowanie i wybór najlepszej dostępnej sieci (według priorytetu i RSSI)
+The user can now:
+- Save up to **5 different WiFi networks** with passwords
+- Browse the list of saved networks
+- Connect to any saved network with one click
+- Remove unwanted networks from the list
+- Add new networks manually (the "+" button)
+- **NEW:** Automatic try of next networks on connection failure (no 2-minute wait)
+- **NEW:** Intelligent scanning and selection of best available network (by priority and RSSI)
 
-### 2. Menu diagnostyczne (System Info)
+### 2. Diagnostic Menu (System Info)
 
-Wyświetla szczegółowe informacje o urządzeniu:
-- **Pamięć:** Total RAM, Free RAM, Minimum Free RAM (leak detection)
+Displays detailed device information:
+- **Memory:** Total RAM, Free RAM, Minimum Free RAM (leak detection)
 - **PSRAM:** Total PSRAM, Free PSRAM
-- **CPU:** Model (ESP32-S3), liczba rdzeni, częstotliwość MHz
-- **System:** ESP-IDF version, czas działania (uptime)
-- **Aplikacja:** Wersja, autor, data kompilacji
-- **Hardware:** Model chipa, szczegóły konfiguracji
+- **CPU:** Model (ESP32-S3), core count, frequency MHz
+- **System:** ESP-IDF version, uptime
+- **Application:** Version, author, build date
+- **Hardware:** Chip model, configuration details
 
 ---
 
-## Nowa Architektura: Multi-SSID Profile Manager
+## New Architecture: Multi-SSID Profile Manager
 
-### Problem z poprzednią implementacją
+### Problem with Previous Implementation
 
-**Rozproszona odpowiedzialność za stan:**
-- `indicator_wifi.c` utrzymywał własny stan w `_g_wifi_model.st`
-- `network_manager.c` duplikował to, odpytując bezpośrednio API ESP-IDF
-- **Skutek:** Możliwe rozbieżności między różnymi częściami systemu
+**Scattered responsibility for state:**
+- `indicator_wifi.c` maintained its own state in `_g_wifi_model.st`
+- `network_manager.c` duplicated this by querying ESP-IDF API directly
+- **Result:** Possible inconsistencies between different parts of the system
 
-**Nieefektywny mechanizm backup:**
-- Sztywny timer 2-minutowy przed próbą sieci zapasowej
-- Tylko jedna sieć zapasowa (nie prawdziwy Multi-SSID)
-- Brak inteligentnego wyboru najlepszej dostępnej sieci
+**Inefficient backup mechanism:**
+- Rigid 2-minute timer before trying backup network
+- Only one backup network (not true Multi-SSID)
+- No intelligent selection of best available network
 
-### Nowe Rozwiązanie
+### New Solution
 
-#### 1. Pojedyncze Źródło Prawdy (Single Source of Truth)
+#### 1. Single Source of Truth
 ```c
-// indicator_wifi.h - MASTER źródło stanu WiFi
+// indicator_wifi.h - MASTER source of WiFi state
 esp_err_t indicator_wifi_get_status(struct view_data_wifi_st *status);
 ```
 
-**Wszystkie moduły** (w tym `network_manager.c`) teraz używają `indicator_wifi_get_status()` zamiast bezpośredniego odpytywania ESP-IDF API.
+**All modules** (including `network_manager.c`) now use `indicator_wifi_get_status()` instead of querying ESP-IDF API directly.
 
-#### 2. Inteligentny Algorytm Łączenia
+#### 2. Intelligent Connection Algorithm
 
-Zamiast czekać 2 minuty na timer, system **natychmiast** próbuje kolejne sieci:
+Instead of waiting 2 minutes for a timer, the system **immediately** tries the next networks:
 
 ```
-Awaria połączenia → Wybór sieci wg priority → Połączenie
+Connection failure → Network selection by priority → Connection
 ```
 
-**Algorytm w `__wifi_try_next_saved_network()`:**
-1. Załaduj listę zapisanych sieci z NVS
-2. Wybierz sieć o najwyższym priorytecie (najniższa wartość `priority`)
-3. Spróbuj połączyć się z wybraną siecią
+**Algorithm in `__wifi_try_next_saved_network()`:**
+1. Load list of saved networks from NVS
+2. Select network with highest priority (lowest `priority` value)
+3. Attempt to connect to the selected network
 
-**Uwaga:** Skanowanie zostało usunięte, aby uniknąć stack overflow w `sys_evt` task (event handler WiFi ma ograniczony stos). Algorytm próbuje sieci po kolei według priorytetu, co jest wystarczająco szybkie i niezawodne.
+**Note:** Scanning was removed to avoid stack overflow in `sys_evt` task (WiFi event handler has limited stack). The algorithm tries networks in order by priority, which is fast and reliable enough.
 
-**Korzyści:**
-- ⚡ **Szybkość:** Natychmiastowe próbowanie kolejnej sieci (bez 2-minutowego czekania)
-- 🎯 **Inteligencja:** Wybór najlepszej dostępnej sieci na podstawie priorytetu i RSSI
-- 🔄 **Skalowalność:** Łatwe dodawanie/usuwanie sieci przez UI
+**Benefits:**
+- ⚡ **Speed:** Immediate try of next network (no 2-minute wait)
+- 🎯 **Intelligence:** Selection of best available network based on priority and RSSI
+- 🔄 **Scalability:** Easy add/remove networks via UI
 
-#### 3. Konsolidacja Modułów
+#### 3. Module Consolidation
 
 **indicator_wifi.c** - MASTER:
-- Jedyny moduł rejestrujący event handlers (`WIFI_EVENT`, `IP_EVENT`)
-- Utrzymuje stan w `_g_wifi_model.st`
-- Wystawia publiczne API: `indicator_wifi_get_status()`
+- Only module registering event handlers (`WIFI_EVENT`, `IP_EVENT`)
+- Maintains state in `_g_wifi_model.st`
+- Exposes public API: `indicator_wifi_get_status()`
 
 **network_manager.c** - CLIENT:
-- Nie odpytuje już ESP-IDF bezpośrednio
-- Używa `indicator_wifi_get_status()` jako źródła prawdy
-- Koncentruje się tylko na HTTP/Ping
+- No longer queries ESP-IDF directly
+- Uses `indicator_wifi_get_status()` as source of truth
+- Focuses only on HTTP/Ping
 
 **indicator_storage.c** - STORAGE:
-- Wspólny interfejs do zapisu/odczytu sieci z NVS
-- Wszystkie operacje przechodzą przez ten moduł
+- Common interface for read/write of networks in NVS
+- All operations go through this module
 
 ---
 
-## Struktury danych (view_data.h)
+## Data Structures (view_data.h)
 
-### Zapisane sieci WiFi
+### Saved WiFi Networks
 
 ```c
 #define MAX_SAVED_NETWORKS 5
@@ -101,35 +101,35 @@ struct view_data_wifi_saved {
     char    ssid[32];
     uint8_t password[64];
     bool    have_password;
-    int8_t  priority;       // 0 = najwyższy priorytet (auto-connect)
-    bool    valid;          // Czy ten slot jest używany
+    int8_t  priority;       // 0 = highest priority (auto-connect)
+    bool    valid;          // Whether this slot is in use
 };
 
 /** List of all saved networks */
 struct view_data_wifi_saved_list {
     struct view_data_wifi_saved networks[MAX_SAVED_NETWORKS];
-    int count;              // Liczba zapisanych sieci
+    int count;              // Number of saved networks
 };
 ```
 
-### Informacje systemowe
+### System Information
 
 ```c
 struct view_data_system_info {
-    uint32_t heap_total;          // Całkowita pamięć RAM (bajty)
-    uint32_t heap_free;           // Wolna pamięć RAM (bajty)
-    uint32_t heap_min_free;       // Min. wolna RAM (wykrywa wycieki)
-    uint32_t psram_total;         // Całkowita PSRAM (bajty)
-    uint32_t psram_free;          // Wolna PSRAM (bajty)
-    uint32_t uptime_seconds;      // Czas działania w sekundach
+    uint32_t heap_total;          // Total RAM (bytes)
+    uint32_t heap_free;           // Free RAM (bytes)
+    uint32_t heap_min_free;       // Min free RAM (detects leaks)
+    uint32_t psram_total;         // Total PSRAM (bytes)
+    uint32_t psram_free;          // Free PSRAM (bytes)
+    uint32_t uptime_seconds;      // Uptime in seconds
     char     chip_model[32];      // "ESP32-S3"
-    uint8_t  cpu_cores;           // Liczba rdzeni CPU
-    uint32_t cpu_freq_mhz;        // Częstotliwość CPU (MHz)
+    uint8_t  cpu_cores;           // CPU core count
+    uint32_t cpu_freq_mhz;        // CPU frequency (MHz)
     char     idf_version[16];     // ESP-IDF version
-    char     app_version[16];     // Wersja aplikacji
+    char     app_version[16];     // Application version
     char     author[32];          // "Jacek Zaleski"
-    char     compile_date[16];    // Data kompilacji
-    char     compile_time[16];    // Czas kompilacji
+    char     compile_date[16];    // Compile date
+    char     compile_time[16];    // Compile time
 };
 ```
 
@@ -137,11 +137,11 @@ struct view_data_system_info {
 
 ## API - Event System
 
-### Nowe eventy w `view_data.h`
+### New Events in `view_data.h`
 
 ```c
 enum {
-    // ... istniejące eventy ...
+    // ... existing events ...
     
     // Multi-network WiFi management
     VIEW_EVENT_WIFI_SAVED_LIST_REQ,     /* Request: NULL */
@@ -157,20 +157,20 @@ enum {
 
 ---
 
-## Użycie w UI (LVGL)
+## Usage in UI (LVGL)
 
-### 1. Pobieranie listy zapisanych sieci
+### 1. Fetching Saved Networks List
 
 ```c
-// W obsłudze przycisku "Saved Networks" w menu WiFi
+// In "Saved Networks" button handler in WiFi menu
 static void on_saved_networks_button_clicked(lv_event_t *e)
 {
-    // Wyślij request o listę zapisanych sieci
+    // Send request for saved networks list
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                      VIEW_EVENT_WIFI_SAVED_LIST_REQ, NULL, 0, portMAX_DELAY);
 }
 
-// Handler odbierający listę
+// Handler receiving the list
 static void view_event_handler(void* handler_args, esp_event_base_t base, 
                                int32_t id, void* event_data)
 {
@@ -181,10 +181,10 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             
             ESP_LOGI(TAG, "Received %d saved networks", list->count);
             
-            // Wyświetl listę w UI
+            // Display list in UI
             for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
                 if (list->networks[i].valid) {
-                    // Dodaj do LVGL list widget
+                    // Add to LVGL list widget
                     char label[64];
                     snprintf(label, sizeof(label), "%s %s", 
                             list->networks[i].ssid,
@@ -198,12 +198,12 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
 }
 ```
 
-### 2. Zapisywanie nowej sieci (przycisk "+")
+### 2. Saving New Network ("+" button)
 
 ```c
 static void on_add_network_button_clicked(lv_event_t *e)
 {
-    // Pobierz SSID i hasło z formularza
+    // Get SSID and password from form
     const char *ssid = lv_textarea_get_text(ssid_input);
     const char *password = lv_textarea_get_text(password_input);
     
@@ -217,15 +217,15 @@ static void on_add_network_button_clicked(lv_event_t *e)
         cfg.have_password = false;
     }
     
-    // Zapisz sieć
+    // Save network
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                      VIEW_EVENT_WIFI_SAVE_NETWORK, &cfg, sizeof(cfg), portMAX_DELAY);
     
-    // Backend automatycznie wyśle zaktualizowaną listę przez VIEW_EVENT_WIFI_SAVED_LIST
+    // Backend will automatically send updated list via VIEW_EVENT_WIFI_SAVED_LIST
 }
 ```
 
-### 3. Łączenie z zapisaną siecią
+### 3. Connecting to Saved Network
 
 ```c
 static void on_connect_saved_network(const char *ssid)
@@ -238,7 +238,7 @@ static void on_connect_saved_network(const char *ssid)
 }
 ```
 
-### 4. Usuwanie sieci z listy
+### 4. Deleting Network from List
 
 ```c
 static void on_delete_network_clicked(const char *ssid)
@@ -249,14 +249,14 @@ static void on_delete_network_clicked(const char *ssid)
                      VIEW_EVENT_WIFI_DELETE_NETWORK, 
                      (void *)ssid, strlen(ssid) + 1, portMAX_DELAY);
     
-    // Backend wyśle zaktualizowaną listę
+    // Backend will send updated list
 }
 ```
 
-### 5. Wyświetlanie System Info (menu diagnostyczne)
+### 5. Displaying System Info (diagnostic menu)
 
 ```c
-// Handler odbierający system info
+// Handler receiving system info
 static void view_event_handler(void* handler_args, esp_event_base_t base, 
                                int32_t id, void* event_data)
 {
@@ -265,10 +265,10 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             struct view_data_system_info *info = 
                 (struct view_data_system_info *)event_data;
             
-            // Aktualizuj LVGL labels
+            // Update LVGL labels
             char buf[64];
             
-            // Pamięć
+            // Memory
             snprintf(buf, sizeof(buf), "RAM: %lu / %lu KB", 
                     info->heap_free / 1024, info->heap_total / 1024);
             lv_label_set_text(label_ram, buf);
@@ -293,15 +293,15 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             snprintf(buf, sizeof(buf), "Uptime: %luh %lum", hours, mins);
             lv_label_set_text(label_uptime, buf);
             
-            // Wersje
+            // Versions
             snprintf(buf, sizeof(buf), "App: %s | IDF: %s", 
                     info->app_version, info->idf_version);
             lv_label_set_text(label_versions, buf);
             
-            // Autor
+            // Author
             lv_label_set_text(label_author, info->author);
             
-            // Kompilacja
+            // Build
             snprintf(buf, sizeof(buf), "Built: %s %s", 
                     info->compile_date, info->compile_time);
             lv_label_set_text(label_build, buf);
@@ -314,43 +314,43 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
 
 ---
 
-## Backend - Logika przechowywania
+## Backend - Storage Logic
 
-### Storage w NVS
+### NVS Storage
 
-Zapisane sieci są przechowywane w NVS pod kluczem `"wifi-saved-networks"` jako struktura `view_data_wifi_saved_list`.
+Saved networks are stored in NVS under key `"wifi-saved-networks"` as structure `view_data_wifi_saved_list`.
 
-**Operacje:**
-- `__wifi_saved_networks_load()` - odczyt z NVS
-- `__wifi_saved_networks_save()` - zapis do NVS
-- `__wifi_saved_network_add()` - dodaj/aktualizuj sieć
-- `__wifi_saved_network_delete()` - usuń sieć
-- `__wifi_saved_network_find()` - znajdź sieć po SSID
+**Operations:**
+- `__wifi_saved_networks_load()` - read from NVS
+- `__wifi_saved_networks_save()` - write to NVS
+- `__wifi_saved_network_add()` - add/update network
+- `__wifi_saved_network_delete()` - delete network
+- `__wifi_saved_network_find()` - find network by SSID
 
-### Auto-connect - ZAIMPLEMENTOWANE ✅
+### Auto-connect - IMPLEMENTED ✅
 
-Logika auto-connect jest już w pełni zaimplementowana w `__wifi_try_next_saved_network()`:
+Auto-connect logic is fully implemented in `__wifi_try_next_saved_network()`:
 
 ```c
 static void __wifi_try_next_saved_network(void)
 {
-    // 1. Załaduj zapisane sieci z NVS
+    // 1. Load saved networks from NVS
     struct view_data_wifi_saved_list saved_list;
     __wifi_saved_networks_load(&saved_list);
     
-    // 2. Wykonaj skanowanie WiFi
+    // 2. Perform WiFi scan
     wifi_ap_record_t scan_results[WIFI_SCAN_LIST_SIZE];
     esp_wifi_scan_start(NULL, true);
     esp_wifi_scan_get_ap_records(&scan_number, scan_results);
     
-    // 3. Znajdź najlepszą dostępną sieć (najniższy priority = najwyższy priorytet)
+    // 3. Find best available network (lowest priority = highest priority)
     int best_priority = 255;
     struct view_data_wifi_saved *best_network = NULL;
     
     for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
         if (!saved_list.networks[i].valid) continue;
         
-        // Sprawdź czy sieć jest w zasięgu
+        // Check if network is in range
         bool found_in_scan = false;
         for (int j = 0; j < scan_count; j++) {
             if (strcmp(saved_list.networks[i].ssid, scan_results[j].ssid) == 0) {
@@ -359,112 +359,112 @@ static void __wifi_try_next_saved_network(void)
             }
         }
         
-        // Wybierz sieć z najwyższym priorytetem (najniższa wartość)
+        // Select network with highest priority (lowest value)
         if (found_in_scan && saved_list.networks[i].priority < best_priority) {
             best_priority = saved_list.networks[i].priority;
             best_network = &saved_list.networks[i];
         }
     }
     
-    // 4. Połącz się z najlepszą siecią
+    // 4. Connect to best network
     if (best_network != NULL) {
         __wifi_connect(best_network->ssid, best_network->password, 3);
     } else {
-        // Fallback: spróbuj pierwszej zapisanej (może być ukryte SSID)
+        // Fallback: try first saved (may be hidden SSID)
         // ...
     }
 }
 ```
 
-**Wywołanie:** Funkcja jest automatycznie wywoływana po awarii połączenia w `WIFI_EVENT_STA_DISCONNECTED` (zamiast uruchamiać 2-minutowy timer).
+**Invocation:** The function is automatically called on connection failure in `WIFI_EVENT_STA_DISCONNECTED` (instead of starting the 2-minute timer).
 
 ---
 
-## Porównanie: Przed vs Po
+## Comparison: Before vs After
 
-### Przed (Stary System)
-
-```
-Awaria głównej sieci
-    ↓
-Czekaj 2 minuty (backup_fallback_timer)
-    ↓
-Spróbuj sieć zapasową z WIFI_BACKUP_STORAGE
-    ↓
-Jeśli awaria → koniec (nie próbuj innych)
-```
-
-**Problemy:**
-- 2-minutowe opóźnienie przed próbą backup
-- Tylko 1 sieć zapasowa
-- Duplikacja stanu między `indicator_wifi` i `network_manager`
-- Brak inteligentnego wyboru (nie skanowanie, nie priorytet)
-
-### Po (Multi-SSID Profile Manager)
+### Before (Old System)
 
 ```
-Awaria sieci
+Main network failure
     ↓
-Natychmiastowe skanowanie (0 sekund czekania!)
+Wait 2 minutes (backup_fallback_timer)
     ↓
-Dopasowanie z listą zapisanych sieci (max 5)
+Try backup network from WIFI_BACKUP_STORAGE
     ↓
-Wybór najlepszej dostępnej (według priority i RSSI)
-    ↓
-Automatyczne połączenie
-    ↓
-Jeśli awaria → spróbuj kolejnej z listy
+If failure → end (don't try others)
 ```
 
-**Zalety:**
-- ⚡ Natychmiastowa reakcja (bez timera)
-- 📋 Do 5 zapisanych sieci (zamiast 1)
-- 🎯 Inteligentny wybór (skanowanie + priority)
-- 🔒 Jeden stan (`indicator_wifi` = single source of truth)
-- 🧹 Czysty kod (usunięto `backup_fallback_timer`)
+**Problems:**
+- 2-minute delay before backup attempt
+- Only 1 backup network
+- State duplication between `indicator_wifi` and `network_manager`
+- No intelligent selection (no scanning, no priority)
+
+### After (Multi-SSID Profile Manager)
+
+```
+Network failure
+    ↓
+Immediate scan (0 seconds wait!)
+    ↓
+Match with saved networks list (max 5)
+    ↓
+Select best available (by priority and RSSI)
+    ↓
+Automatic connection
+    ↓
+If failure → try next from list
+```
+
+**Benefits:**
+- ⚡ Immediate response (no timer)
+- 📋 Up to 5 saved networks (instead of 1)
+- 🎯 Intelligent selection (scanning + priority)
+- 🔒 Single state (`indicator_wifi` = single source of truth)
+- 🧹 Clean code (removed `backup_fallback_timer`)
 
 ---
 
-## Usunięte Komponenty
+## Removed Components
 
-### ❌ Usunięto: Backup Timer (2-minutowy)
+### ❌ Removed: Backup Timer (2-minute)
 
-**Przed:**
+**Before:**
 ```c
 static TimerHandle_t backup_fallback_timer = NULL;
 
-// W WIFI_EVENT_STA_DISCONNECTED:
+// In WIFI_EVENT_STA_DISCONNECTED:
 if (backup_fallback_timer) {
-    xTimerReset(backup_fallback_timer, 0);  // Czekaj 2 min
+    xTimerReset(backup_fallback_timer, 0);  // Wait 2 min
 }
 
-// Callback po 2 minutach:
+// Callback after 2 minutes:
 static void backup_fallback_timer_cb(TimerHandle_t xTimer) {
-    // Spróbuj backup network
+    // Try backup network
 }
 ```
 
-**Po:**
+**After:**
 ```c
-// W WIFI_EVENT_STA_DISCONNECTED:
-__wifi_try_next_saved_network();  // Natychmiastowo!
+// In WIFI_EVENT_STA_DISCONNECTED:
+__wifi_try_next_saved_network();  // Immediately!
 ```
 
-### ❌ Usunięto: Duplikacja stanu w network_manager
+### ❌ Removed: State Duplication in network_manager
 
-**Przed:**
+**Before:**
 ```c
-// network_manager.c - duplikacja!
+// network_manager.c - duplication!
 esp_err_t network_manager_get_wifi_status(struct view_data_wifi_st *status) {
     wifi_ap_record_t ap_info;
-    esp_wifi_sta_get_ap_info(&ap_info);  // Bezpośrednie odpytywanie ESP-IDF
-    // ... ręczne wypełnianie status ...
+    esp_wifi_sta_get_ap_info(&ap_info);  // Direct ESP-IDF query
+    // ... manual status filling ...
 }
 ```
 
-**Po:**
+**After:**
 ```c
-// network_manager.c - delegacja do master
+// network_manager.c - delegation to master
 esp_err_t network_manager_get_wifi_status(struct view_data_wifi_st *status) {
     return indicator_wifi_get_status(status);  // Single source of truth
 }
@@ -472,27 +472,27 @@ esp_err_t network_manager_get_wifi_status(struct view_data_wifi_st *status) {
 
 ---
 
-## Testowanie
+## Testing
 
-### 1. Test zapisywania sieci (Auto-save po połączeniu)
+### 1. Test Saving Network (Auto-save after connection)
 
 ```bash
-# W Serial Monitor po udanym połączeniu:
+# In Serial Monitor after successful connection:
 I (12345) wifi-model: wifi event: WIFI_EVENT_STA_CONNECTED
 I (12346) wifi-model: Auto-saved network: MyHomeWiFi
 I (12347) wifi-model: Saved 1 networks to NVS
 ```
 
-### 2. Test ręcznego zapisywania sieci
+### 2. Test Manual Network Save
 
 ```bash
-# Po wysłaniu VIEW_EVENT_WIFI_SAVE_NETWORK:
+# After sending VIEW_EVENT_WIFI_SAVE_NETWORK:
 I (23456) wifi-model: event: VIEW_EVENT_WIFI_SAVE_NETWORK
 I (23457) wifi-model: Adding new network at slot 1: OfficeWiFi
 I (23458) wifi-model: Saved 2 networks to NVS
 ```
 
-### 3. Test łączenia z zapisaną siecią
+### 3. Test Connecting to Saved Network
 
 ```bash
 I (34567) wifi-model: event: VIEW_EVENT_WIFI_CONNECT_SAVED
@@ -501,37 +501,37 @@ I (34569) wifi-model: password: ********
 I (34570) wifi-model: connect...
 ```
 
-### 4. Test Multi-SSID (najważniejszy!)
+### 4. Test Multi-SSID (most important!)
 
-**Scenariusz:** Rozłącz się z głównej sieci, urządzenie próbuje automatycznie kolejne.
+**Scenario:** Disconnect from main network, device automatically tries the next ones.
 
 ```bash
-# Awaria głównej sieci:
+# Main network failure:
 I (45678) wifi-model: wifi event: WIFI_EVENT_STA_DISCONNECTED
 I (45679) wifi-model: Connection failure, trying next network...
 
-# Natychmiastowe skanowanie i próba:
+# Immediate scan and attempt:
 I (45680) wifi-model: Attempting to connect to next saved network...
 I (45681) wifi-model: Found 3 saved network(s)
 I (45682) wifi-model: Scan found 12 networks
 
-# Dopasowanie:
+# Matching:
 I (45683) wifi-model: Saved network 'MyHomeWiFi' found in scan (RSSI: -45, priority: 0)
 I (45684) wifi-model: Saved network 'OfficeWiFi' found in scan (RSSI: -78, priority: 1)
 
-# Wybór najlepszej (priority 0 = najwyższy):
+# Best selection (priority 0 = highest):
 I (45685) wifi-model: Attempting to connect to saved network: MyHomeWiFi (priority: 0)
 I (45686) wifi-model: ssid: MyHomeWiFi
 I (45687) wifi-model: connect...
 
-# Sukces:
+# Success:
 I (48000) wifi-model: wifi event: WIFI_EVENT_STA_CONNECTED
 I (48500) wifi-model: got ip:192.168.1.123
 ```
 
-**Czas reakcji:** ~10 sekund (skanowanie + połączenie) zamiast **2 minuty**!
+**Response time:** ~10 seconds (scan + connection) instead of **2 minutes**!
 
-### 3. Test System Info
+### 5. Test System Info
 
 ```bash
 I (34567) app_main: System Info:
@@ -545,17 +545,17 @@ I (34567) app_main: System Info:
 
 ---
 
-## Przykładowy UI Flow
+## Example UI Flow
 
-### Menu WiFi (rozszerzone)
+### WiFi Menu (extended)
 
 ```
 ┌─────────────────────────┐
 │      WiFi Settings      │
 ├─────────────────────────┤
-│ [Scan Networks]         │  ← Istniejąca funkcjonalność
-│ [Saved Networks] (3)    │  ← NOWE: Lista zapisanych
-│ [+ Add Network]         │  ← NOWE: Dodaj ręcznie
+│ [Scan Networks]         │  ← Existing functionality
+│ [Saved Networks] (3)    │  ← NEW: Saved list
+│ [+ Add Network]         │  ← NEW: Add manually
 │ [Disconnect]            │
 └─────────────────────────┘
 ```
@@ -566,7 +566,7 @@ I (34567) app_main: System Info:
 ┌─────────────────────────┐
 │    Saved Networks (3)   │
 ├─────────────────────────┤
-│ 📶 MyHomeWiFi    🔒 [×] │  ← Kliknij: połącz | [×]: usuń
+│ 📶 MyHomeWiFi    🔒 [×] │  ← Click: connect | [×]: delete
 │ 📶 OfficeWiFi    🔒 [×] │
 │ 📶 PublicHotspot    [×] │
 │                         │
@@ -601,57 +601,57 @@ I (34567) app_main: System Info:
 
 ---
 
-## Podsumowanie
+## Summary
 
-### Backend - Multi-SSID Profile Manager (Gotowe ✅)
+### Backend - Multi-SSID Profile Manager (Done ✅)
 
-#### Zaimplementowane funkcjonalności:
-- ✅ **Multi-SSID Storage:** Do 5 zapisanych sieci w NVS (`wifi-saved-networks`)
-- ✅ **Inteligentny Auto-connect:** Natychmiastowe próbowanie kolejnych sieci po awarii
-- ✅ **Skanowanie + Matching:** Wybór najlepszej dostępnej sieci (priority + RSSI)
-- ✅ **Auto-save:** Automatyczny zapis sieci po udanym połączeniu
-- ✅ **Single Source of Truth:** `indicator_wifi_get_status()` jako master
-- ✅ **Konsolidacja:** `network_manager.c` używa `indicator_wifi` zamiast duplikować stan
-- ✅ **Event System:** Pełne API do zarządzania sieciami z UI
-- ✅ **System Info:** Diagnostyka sprzętu i pamięci
+#### Implemented features:
+- ✅ **Multi-SSID Storage:** Up to 5 saved networks in NVS (`wifi-saved-networks`)
+- ✅ **Intelligent Auto-connect:** Immediate try of next networks on failure
+- ✅ **Scanning + Matching:** Selection of best available network (priority + RSSI)
+- ✅ **Auto-save:** Automatic save of network after successful connection
+- ✅ **Single Source of Truth:** `indicator_wifi_get_status()` as master
+- ✅ **Consolidation:** `network_manager.c` uses `indicator_wifi` instead of duplicating state
+- ✅ **Event System:** Full API for network management from UI
+- ✅ **System Info:** Hardware and memory diagnostics
 
-#### Usunięte problemy:
-- ❌ **Backup Timer (2 min):** Zastąpiony natychmiastowym skanowaniem
-- ❌ **Duplikacja stanu:** `network_manager` deleguje do `indicator_wifi`
-- ❌ **Sztywna logika:** Elastyczny system priorytetów zamiast "główna + backup"
+#### Removed issues:
+- ❌ **Backup Timer (2 min):** Replaced with immediate scanning
+- ❌ **State Duplication:** `network_manager` delegates to `indicator_wifi`
+- ❌ **Rigid Logic:** Flexible priority system instead of "main + backup"
 
-#### Pliki zmodyfikowane:
+#### Modified files:
 ```
-main/model/indicator_wifi.c     - Główna logika Multi-SSID
-main/model/indicator_wifi.h     - Dodano indicator_wifi_get_status()
-main/model/network_manager.c    - Usunięto duplikację, delegacja do indicator_wifi
-main/view_data.h                - Struktury dla saved networks
-WIFI_MULTI_NETWORK.md           - Dokumentacja (ten plik)
+main/model/indicator_wifi.c     - Main Multi-SSID logic
+main/model/indicator_wifi.h     - Added indicator_wifi_get_status()
+main/model/network_manager.c    - Removed duplication, delegation to indicator_wifi
+main/view_data.h                - Structures for saved networks
+WIFI_MULTI_NETWORK.md           - Documentation (this file)
 ```
 
-### Frontend (Do zrobienia)
-- ⬜ UI dla "Saved Networks" list
-- ⬜ UI dla przycisku "+" (Add Network)
-- ⬜ UI dla ekranu System Info w menu Settings
-- ⬜ Obsługa eventów w `indicator_view.c`
+### Frontend (To do)
+- ⬜ UI for "Saved Networks" list
+- ⬜ UI for "+" button (Add Network)
+- ⬜ UI for System Info screen in Settings menu
+- ⬜ Event handling in `indicator_view.c`
 
 ---
 
-## Migracja z Backup System
+## Migration from Backup System
 
-Jeśli masz zapisaną sieć zapasową pod kluczem `WIFI_BACKUP_STORAGE`, możesz ją zaimportować do nowego systemu:
+If you have a saved backup network under key `WIFI_BACKUP_STORAGE`, you can import it to the new system:
 
 ```c
-// Jednorazowa migracja (dodaj w indicator_wifi_init):
+// One-time migration (add in indicator_wifi_init):
 struct view_data_wifi_config old_backup;
 size_t len = sizeof(old_backup);
 if (indicator_storage_read(WIFI_BACKUP_STORAGE, &old_backup, &len) == ESP_OK) {
-    // Dodaj do nowego systemu
+    // Add to new system
     __wifi_saved_network_add(old_backup.ssid, 
                             old_backup.have_password ? (char*)old_backup.password : NULL,
                             old_backup.have_password);
     
-    // Usuń stary backup
+    // Remove old backup
     nvs_handle_t handle;
     nvs_open("indicator", NVS_READWRITE, &handle);
     nvs_erase_key(handle, "wifi-backup");
@@ -661,4 +661,4 @@ if (indicator_storage_read(WIFI_BACKUP_STORAGE, &old_backup, &len) == ESP_OK) {
 
 ---
 
-Backend jest w **100% gotowy** do użycia! Wszystkie dane są automatycznie zbierane, priorytetyzowane i wysyłane przez eventy. System Multi-SSID działa od razu po uruchomieniu – musisz tylko stworzyć UI (LVGL) i podpiąć handlery eventów.
+The backend is **100% ready** for use! All data is automatically collected, prioritized and sent via events. The Multi-SSID system works right after startup – you only need to create the UI (LVGL) and hook up event handlers.

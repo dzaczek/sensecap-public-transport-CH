@@ -10,9 +10,9 @@ extern "C" {
 #endif
 
 #define MAX_DEPARTURES 10
-/* Legacy: ten moduł (indicator_transport.c) jest wyłączony z builda – używany jest transport_data.c.
- * Lista przystanków/stacji jest w indicator_view.c: predefined_bus_stops, predefined_stations. */
-#define STATION_ID "8590142"  // fallback tylko gdyby ten moduł był w buildzie
+/* Legacy: this module (indicator_transport.c) is excluded from the build – transport_data.c is used instead.
+ * The list of stops/stations is in indicator_view.c: predefined_bus_stops, predefined_stations. */
+#define STATION_ID "8590142"  // fallback only if this module were in the build
 
 /**
  * @brief Single bus departure information

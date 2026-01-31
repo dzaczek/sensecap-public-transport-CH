@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 16 px
  * Bpp: 4
- * Opts: --bpp 4 --size 16 --no-compress --stride 1 --align 1 --font Arimo-Regular.ttf --symbols ← → ↻ ⟳ --range 32-126,160-255 --format lvgl -o arimo_16.c
+ * Opts: --bpp 4 --size 16 --no-compress --stride 1 --align 1 --font Arimo-Regular.ttf --symbols ← → ↻ ⟳ 🔒 🔓 ✓ --range 32-126,160-255 --format lvgl -o arimo_16.c
  ******************************************************************************/
 
 #ifdef __has_include

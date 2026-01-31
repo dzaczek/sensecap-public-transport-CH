@@ -141,11 +141,11 @@ static lv_obj_t *display_apply_btn = NULL;
 static lv_obj_t *wifi_view_cont = NULL;
 static lv_obj_t *wifi_netinfo_cont = NULL;  /* panel with IP, DNS, RSSI, etc. */
 static lv_obj_t *wifi_list = NULL;
-static lv_obj_t *wifi_password_view_cont = NULL;
+static lv_obj_t *wifi_password_view_cont = NULL;  /* Unified Connection Screen */
+static lv_obj_t *wifi_ssid_ta = NULL;  /* SSID Text Area (editable for manual add) */
 static lv_obj_t *wifi_password_ta = NULL;
-static lv_obj_t *wifi_password_ssid_label = NULL;  /* left panel SSID, updated when shown */
 static lv_obj_t *wifi_keyboard = NULL;
-static char current_wifi_ssid[32];
+static char current_wifi_ssid[32];  /* Keep for backward compatibility */
 
 // WiFi Saved Networks widgets
 static lv_obj_t *wifi_saved_cont = NULL;
@@ -214,11 +214,13 @@ static void sysinfo_btn_cb(lv_event_t *e);
 static void sysinfo_back_btn_cb(lv_event_t *e);
 static void wifi_back_btn_cb(lv_event_t *e);
 static void wifi_scan_btn_cb(lv_event_t *e);
+static void wifi_manual_add_btn_cb(lv_event_t *e);
 static void wifi_list_item_cb(lv_event_t *e);
 static void wifi_password_back_btn_cb(lv_event_t *e);
 static void wifi_connect_btn_cb(lv_event_t *e);
 static void wifi_save_backup_btn_cb(lv_event_t *e);
 static void wifi_keyboard_event_cb(lv_event_t *e);
+static void ta_event_cb(lv_event_t *e);
 static void wifi_saved_btn_cb(lv_event_t *e);
 static void wifi_saved_back_btn_cb(lv_event_t *e);
 static void wifi_saved_item_connect_cb(lv_event_t *e);
@@ -1637,17 +1639,25 @@ static void wifi_list_item_cb(lv_event_t *e)
     struct view_data_wifi_item *item = (struct view_data_wifi_item *)lv_event_get_user_data(e);
     if (!item) return;
     
-    // Save SSID
+    // Save SSID (for backward compatibility)
     strlcpy(current_wifi_ssid, item->ssid, sizeof(current_wifi_ssid));
     
     if (item->auth_mode) {
         // Needs password
+        // 1. Populate SSID Text Area
+        lv_textarea_set_text(wifi_ssid_ta, item->ssid);
+        // Optional: Make SSID read-only to prevent editing
+        // lv_obj_add_state(wifi_ssid_ta, LV_STATE_DISABLED);
+        
+        // 2. Clear Password Text Area
         lv_textarea_set_text(wifi_password_ta, "");
-        if (wifi_password_ssid_label) {
-            lv_label_set_text(wifi_password_ssid_label, current_wifi_ssid[0] ? current_wifi_ssid : "—");
-        }
+        
+        // 3. Switch Views
         lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
+        
+        // 4. Focus keyboard on Password
+        lv_keyboard_set_textarea(wifi_keyboard, wifi_password_ta);
     } else {
         // Open network, connect immediately
         struct view_data_wifi_config cfg = {0};
@@ -1663,6 +1673,26 @@ static void wifi_list_item_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Manual Add Button Callback (+ button)
+ */
+static void wifi_manual_add_btn_cb(lv_event_t *e)
+{
+    // 1. Clear SSID Text Area and Enable editing
+    lv_textarea_set_text(wifi_ssid_ta, "");
+    lv_obj_clear_state(wifi_ssid_ta, LV_STATE_DISABLED);
+    
+    // 2. Clear Password Text Area
+    lv_textarea_set_text(wifi_password_ta, "");
+    
+    // 3. Switch Views
+    lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
+    
+    // 4. Focus keyboard on SSID first
+    lv_keyboard_set_textarea(wifi_keyboard, wifi_ssid_ta);
+}
+
+/**
  * @brief Back from Password Screen
  */
 static void wifi_password_back_btn_cb(lv_event_t *e)
@@ -1672,12 +1702,17 @@ static void wifi_password_back_btn_cb(lv_event_t *e)
 }
 
 /**
- * @brief Save current SSID + password as backup network (fallback after 2 min)
+ * @brief Save current SSID + password as backup network
  */
 static void wifi_save_backup_btn_cb(lv_event_t *e)
 {
     struct view_data_wifi_config cfg = {0};
-    strlcpy(cfg.ssid, current_wifi_ssid, sizeof(cfg.ssid));
+    
+    // Read SSID from Text Area
+    const char *ssid_txt = lv_textarea_get_text(wifi_ssid_ta);
+    strlcpy(cfg.ssid, ssid_txt, sizeof(cfg.ssid));
+    
+    // Read Password from Text Area
     const char *password = lv_textarea_get_text(wifi_password_ta);
     if (password && strlen(password) > 0) {
         strlcpy((char *)cfg.password, password, sizeof(cfg.password));
@@ -1685,32 +1720,54 @@ static void wifi_save_backup_btn_cb(lv_event_t *e)
     } else {
         cfg.have_password = false;
     }
+    
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_SET_BACKUP, &cfg, sizeof(cfg), portMAX_DELAY);
     lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
 }
 
 /**
- * @brief Connect Button Callback
+ * @brief Connect Button Callback (Unified for both scenarios)
  */
 static void wifi_connect_btn_cb(lv_event_t *e)
 {
     struct view_data_wifi_config cfg = {0};
-    strlcpy(cfg.ssid, current_wifi_ssid, sizeof(cfg.ssid));
     
+    // 1. Get SSID from Text Area (works for both manual and list modes)
+    const char *ssid_txt = lv_textarea_get_text(wifi_ssid_ta);
+    strlcpy(cfg.ssid, ssid_txt, sizeof(cfg.ssid));
+    
+    // 2. Get Password from Text Area
     const char *password = lv_textarea_get_text(wifi_password_ta);
-    if (strlen(password) > 0) {
+    if (password && strlen(password) > 0) {
         strlcpy((char*)cfg.password, password, sizeof(cfg.password));
         cfg.have_password = true;
     } else {
         cfg.have_password = false;
     }
     
+    // 3. Send event to Backend
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_CONNECT, &cfg, sizeof(cfg), portMAX_DELAY);
     
-    // Go back to main settings
+    // 4. Cleanup UI (Return to main settings)
     lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(settings_main_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Text Area Event Callback (for keyboard focus switching)
+ */
+static void ta_event_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *ta = lv_event_get_target(e);
+    lv_obj_t *kb = (lv_obj_t *)lv_event_get_user_data(e);
+    
+    if (code == LV_EVENT_CLICKED || code == LV_EVENT_FOCUSED) {
+        if (kb) {
+            lv_keyboard_set_textarea(kb, ta);
+        }
+    }
 }
 
 /**
@@ -1733,11 +1790,24 @@ static void wifi_keyboard_event_cb(lv_event_t *e)
  */
 static void wifi_saved_btn_cb(lv_event_t *e)
 {
+    ESP_LOGI(TAG, "wifi_saved_btn_cb: Showing saved networks screen");
+    
+    // Check if widgets exist
+    if (!wifi_saved_cont) {
+        ESP_LOGE(TAG, "wifi_saved_cont is NULL!");
+        return;
+    }
+    if (!wifi_saved_list) {
+        ESP_LOGE(TAG, "wifi_saved_list is NULL!");
+        return;
+    }
+    
     // Hide WiFi list, show saved networks
     lv_obj_add_flag(wifi_view_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(wifi_saved_cont, LV_OBJ_FLAG_HIDDEN);
     
     // Request list from backend
+    ESP_LOGI(TAG, "Requesting saved networks list from backend");
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                      VIEW_EVENT_WIFI_SAVED_LIST_REQ, NULL, 0, portMAX_DELAY);
 }
@@ -1963,6 +2033,16 @@ static void create_wifi_screen(lv_obj_t *parent)
     lv_label_set_text(title, "WiFi");
     lv_obj_align(title, LV_ALIGN_TOP_LEFT, 50, 15);
     
+    // Add button ("+")
+    lv_obj_t *add_btn = lv_btn_create(header);
+    lv_obj_set_size(add_btn, 40, 40);
+    lv_obj_align(add_btn, LV_ALIGN_RIGHT_MID, -135, 0);
+    lv_obj_add_event_cb(add_btn, wifi_manual_add_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *add_lbl = lv_label_create(add_btn);
+    lv_label_set_text(add_lbl, "+");
+    lv_obj_set_style_text_font(add_lbl, &arimo_24, 0);
+    lv_obj_center(add_lbl);
+    
     // Saved Networks button
     lv_obj_t *saved_btn = lv_btn_create(header);
     lv_obj_set_size(saved_btn, 60, 40);
@@ -2011,7 +2091,7 @@ static void create_wifi_screen(lv_obj_t *parent)
 }
 
 /**
- * @brief Create WiFi Password Screen – right-side password panel for readability
+ * @brief Create WiFi Connection Screen – unified for both list selection and manual add
  */
 static void create_wifi_password_screen(lv_obj_t *parent)
 {
@@ -2021,24 +2101,31 @@ static void create_wifi_password_screen(lv_obj_t *parent)
     lv_obj_set_style_border_width(wifi_password_view_cont, 0, 0);
     lv_obj_add_flag(wifi_password_view_cont, LV_OBJ_FLAG_HIDDEN);
     
-    // Left side: SSID / instruction (50% width)
+    // Left side: SSID input (50% width)
     lv_obj_t *left_panel = lv_obj_create(wifi_password_view_cont);
     lv_obj_set_size(left_panel, LV_PCT(50), LV_PCT(100));
     lv_obj_set_style_bg_opa(left_panel, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(left_panel, 0, 0);
+    lv_obj_set_style_pad_all(left_panel, 12, 0);
     lv_obj_align(left_panel, LV_ALIGN_LEFT_MID, 0, 0);
     
-    wifi_password_ssid_label = lv_label_create(left_panel);
-    lv_label_set_text(wifi_password_ssid_label, "—");
-    lv_obj_set_style_text_font(wifi_password_ssid_label, &arimo_20, 0);
-    lv_obj_set_style_text_color(wifi_password_ssid_label, lv_color_white(), 0);
-    lv_obj_align(wifi_password_ssid_label, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_t *ssid_title = lv_label_create(left_panel);
+    lv_label_set_text(ssid_title, "SSID");
+    lv_obj_set_style_text_font(ssid_title, &arimo_20, 0);
+    lv_obj_set_style_text_color(ssid_title, lv_color_white(), 0);
+    lv_obj_align(ssid_title, LV_ALIGN_TOP_LEFT, 0, 10);
+    
+    wifi_ssid_ta = lv_textarea_create(left_panel);
+    lv_textarea_set_one_line(wifi_ssid_ta, true);
+    lv_obj_set_size(wifi_ssid_ta, LV_PCT(100), 60);
+    lv_obj_align(wifi_ssid_ta, LV_ALIGN_TOP_LEFT, 0, 45);
+    lv_obj_set_style_text_font(wifi_ssid_ta, &arimo_20, 0);
     
     lv_obj_t *hint_lbl = lv_label_create(left_panel);
-    lv_label_set_text(hint_lbl, "Enter password on the right");
+    lv_label_set_text(hint_lbl, "Tap fields to edit");
     lv_obj_set_style_text_font(hint_lbl, &arimo_16, 0);
     lv_obj_set_style_text_color(hint_lbl, lv_color_hex(0xaaaaaa), 0);
-    lv_obj_align(hint_lbl, LV_ALIGN_TOP_MID, 0, 80);
+    lv_obj_align(hint_lbl, LV_ALIGN_TOP_LEFT, 0, 120);
     
     // Right side: password panel (50% width) – more readable
     lv_obj_t *right_panel = lv_obj_create(wifi_password_view_cont);
@@ -2060,6 +2147,7 @@ static void create_wifi_password_screen(lv_obj_t *parent)
     lv_obj_set_size(wifi_password_ta, LV_PCT(100), 60);
     lv_obj_align(wifi_password_ta, LV_ALIGN_TOP_LEFT, 0, 45);
     lv_obj_set_style_text_font(wifi_password_ta, &arimo_20, 0);
+    lv_obj_add_event_cb(wifi_password_ta, ta_event_cb, LV_EVENT_CLICKED, NULL);
     
     lv_obj_t *btn = lv_btn_create(right_panel);
     lv_obj_set_size(btn, LV_PCT(100), 48);
@@ -2093,6 +2181,10 @@ static void create_wifi_password_screen(lv_obj_t *parent)
     lv_obj_set_size(wifi_keyboard, LV_PCT(100), LV_PCT(40));
     lv_obj_align(wifi_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_add_event_cb(wifi_keyboard, wifi_keyboard_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    // Add event callbacks for text areas to switch keyboard focus
+    lv_obj_add_event_cb(wifi_ssid_ta, ta_event_cb, LV_EVENT_CLICKED, wifi_keyboard);
+    lv_obj_add_event_cb(wifi_password_ta, ta_event_cb, LV_EVENT_CLICKED, wifi_keyboard);
 }
 
 /**
@@ -2246,7 +2338,21 @@ static void create_wifi_add_screen(lv_obj_t *parent)
  */
 static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
 {
-    if (!list) return;
+    if (!list) {
+        ESP_LOGW(TAG, "update_wifi_saved_list: list is NULL");
+        return;
+    }
+
+    ESP_LOGI(TAG, "update_wifi_saved_list: count=%d", list->count);
+    
+    // Debug: print all networks
+    for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
+        if (list->networks[i].valid) {
+            ESP_LOGI(TAG, "  [%d] SSID='%s' priority=%d valid=%d has_pwd=%d", 
+                    i, list->networks[i].ssid, list->networks[i].priority,
+                    list->networks[i].valid, list->networks[i].have_password);
+        }
+    }
 
     lv_port_sem_take();
 
@@ -2254,6 +2360,7 @@ static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
     lv_obj_clean(wifi_saved_list);
 
     if (list->count == 0) {
+        ESP_LOGW(TAG, "No saved networks in list (count=0)");
         lv_obj_t *empty_lbl = lv_label_create(wifi_saved_list);
         lv_label_set_text(empty_lbl, "No saved networks\n\nClick '+' to add one");
         lv_obj_set_style_text_font(empty_lbl, &arimo_20, 0);
@@ -2268,8 +2375,10 @@ static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
     network_manager_get_wifi_status(&wifi_st);
 
     // Add each saved network
+    int ui_items_added = 0;
     for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
         if (!list->networks[i].valid) continue;
+        ui_items_added++;
 
         // Check if this is the currently connected network
         bool is_connected = wifi_st.is_connected && 
@@ -2293,8 +2402,8 @@ static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
         // SSID label with connection status
         lv_obj_t *ssid_lbl = lv_label_create(item);
         char buf[80];
-        const char *lock_icon = list->networks[i].have_password ? "🔒" : "🔓";
-        const char *conn_icon = is_connected ? "✓ " : "";
+        const char *lock_icon = list->networks[i].have_password ? "[*]" : "[ ]";
+        const char *conn_icon = is_connected ? "> " : "  ";
         snprintf(buf, sizeof(buf), "%s%s %s", conn_icon, lock_icon, list->networks[i].ssid);
         lv_label_set_text(ssid_lbl, buf);
         lv_obj_set_style_text_font(ssid_lbl, &arimo_16, 0);
@@ -2342,6 +2451,7 @@ static void update_wifi_saved_list(const struct view_data_wifi_saved_list *list)
         lv_obj_center(del_lbl);
     }
 
+    ESP_LOGI(TAG, "update_wifi_saved_list: Added %d UI items", ui_items_added);
     lv_port_sem_give();
 }
 

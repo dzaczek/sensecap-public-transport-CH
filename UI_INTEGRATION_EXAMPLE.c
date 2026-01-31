@@ -1,11 +1,11 @@
 /**
  * @file UI_INTEGRATION_EXAMPLE.c
- * @brief Przykładowy kod integracji WiFi Multi-Network i System Info z LVGL UI
+ * @brief Example code for WiFi Multi-Network and System Info integration with LVGL UI
  * 
- * Ten plik pokazuje jak podpiąć backend pod UI.
- * NIE kompiluj tego pliku bezpośrednio - to tylko przykład/szablon!
+ * This file shows how to hook up the backend to the UI.
+ * DO NOT compile this file directly - it's only an example/template!
  * 
- * Skopiuj odpowiednie fragmenty do swojego indicator_view.c
+ * Copy the relevant fragments to your indicator_view.c
  */
 
 #include "lvgl.h"
@@ -13,30 +13,30 @@
 #include "view_data.h"
 
 // ============================================================================
-// PRZYKŁAD 1: Menu WiFi - Lista zapisanych sieci
+// EXAMPLE 1: WiFi Menu - Saved Networks List
 // ============================================================================
 
 static lv_obj_t *saved_networks_screen = NULL;
 static lv_obj_t *saved_networks_list = NULL;
 
 /**
- * @brief Stwórz ekran z listą zapisanych sieci WiFi
+ * @brief Create screen with list of saved WiFi networks
  */
 static void create_saved_networks_screen(void)
 {
     saved_networks_screen = lv_obj_create(NULL);
     
-    // Tytuł
+    // Title
     lv_obj_t *title = lv_label_create(saved_networks_screen);
     lv_label_set_text(title, "Saved Networks");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
     
-    // Lista zapisanych sieci (LVGL list widget)
+    // List of saved networks (LVGL list widget)
     saved_networks_list = lv_list_create(saved_networks_screen);
     lv_obj_set_size(saved_networks_list, 400, 350);
     lv_obj_align(saved_networks_list, LV_ALIGN_CENTER, 0, 0);
     
-    // Przyciski na dole
+    // Bottom buttons
     lv_obj_t *btn_add = lv_btn_create(saved_networks_screen);
     lv_obj_add_event_cb(btn_add, on_add_network_btn_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_align(btn_add, LV_ALIGN_BOTTOM_RIGHT, -10, -10);
@@ -51,23 +51,23 @@ static void create_saved_networks_screen(void)
 }
 
 /**
- * @brief Callback: Użytkownik otworzył ekran zapisanych sieci
+ * @brief Callback: User opened saved networks screen
  */
 static void on_saved_networks_btn_clicked(lv_event_t *e)
 {
-    // Pokaż ekran
+    // Show screen
     lv_scr_load(saved_networks_screen);
     
-    // Wyczyść starą listę
+    // Clear old list
     lv_obj_clean(saved_networks_list);
     
-    // Poproś backend o aktualną listę zapisanych sieci
+    // Request current saved networks list from backend
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                      VIEW_EVENT_WIFI_SAVED_LIST_REQ, NULL, 0, portMAX_DELAY);
 }
 
 /**
- * @brief Event handler: Backend przysłał listę zapisanych sieci
+ * @brief Event handler: Backend sent list of saved networks
  */
 static void handle_wifi_saved_list(struct view_data_wifi_saved_list *list)
 {
@@ -75,37 +75,37 @@ static void handle_wifi_saved_list(struct view_data_wifi_saved_list *list)
     
     ESP_LOGI("UI", "Received %d saved networks", list->count);
     
-    // Wyczyść aktualną listę
+    // Clear current list
     lv_obj_clean(saved_networks_list);
     
     if (list->count == 0) {
-        // Brak zapisanych sieci
+        // No saved networks
         lv_obj_t *empty_label = lv_label_create(saved_networks_list);
         lv_label_set_text(empty_label, "No saved networks\nClick '+ Add Network' to add one");
         return;
     }
     
-    // Dodaj każdą zapisaną sieć do listy
+    // Add each saved network to list
     for (int i = 0; i < MAX_SAVED_NETWORKS; i++) {
         if (list->networks[i].valid) {
             char label_text[100];
             
-            // Ikona hasła
+            // Password icon
             const char *lock_icon = list->networks[i].have_password ? "🔒" : "🔓";
             
             snprintf(label_text, sizeof(label_text), "%s  %s", 
                     lock_icon, list->networks[i].ssid);
             
-            // Dodaj przycisk do listy
+            // Add button to list
             lv_obj_t *btn = lv_list_add_btn(saved_networks_list, LV_SYMBOL_WIFI, label_text);
             
-            // Zapisz SSID jako user_data (potrzebne w callbacku)
+            // Store SSID as user_data (needed in callback)
             lv_obj_set_user_data(btn, strdup(list->networks[i].ssid));
             
-            // Handler kliknięcia: połącz z tą siecią
+            // Click handler: connect to this network
             lv_obj_add_event_cb(btn, on_saved_network_item_clicked, LV_EVENT_CLICKED, NULL);
             
-            // Przycisk "Delete" (X)
+            // "Delete" button (X)
             lv_obj_t *btn_delete = lv_btn_create(btn);
             lv_obj_set_size(btn_delete, 40, 40);
             lv_obj_align(btn_delete, LV_ALIGN_RIGHT_MID, 0, 0);
@@ -118,7 +118,7 @@ static void handle_wifi_saved_list(struct view_data_wifi_saved_list *list)
 }
 
 /**
- * @brief Callback: Użytkownik kliknął na zapisaną sieć (połącz)
+ * @brief Callback: User clicked on saved network (connect)
  */
 static void on_saved_network_item_clicked(lv_event_t *e)
 {
@@ -128,18 +128,18 @@ static void on_saved_network_item_clicked(lv_event_t *e)
     if (ssid && ssid[0]) {
         ESP_LOGI("UI", "Connecting to saved network: %s", ssid);
         
-        // Wyślij request do backendu
+        // Send request to backend
         esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                          VIEW_EVENT_WIFI_CONNECT_SAVED, 
                          (void *)ssid, strlen(ssid) + 1, portMAX_DELAY);
         
-        // Pokaż animację "Connecting..."
-        // ... (twój kod UI) ...
+        // Show "Connecting..." animation
+        // ... (your UI code) ...
     }
 }
 
 /**
- * @brief Callback: Użytkownik kliknął "Delete" (X)
+ * @brief Callback: User clicked "Delete" (X)
  */
 static void on_delete_network_clicked(lv_event_t *e)
 {
@@ -149,27 +149,27 @@ static void on_delete_network_clicked(lv_event_t *e)
     if (ssid && ssid[0]) {
         ESP_LOGI("UI", "Deleting network: %s", ssid);
         
-        // Wyślij request do backendu
+        // Send request to backend
         esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                          VIEW_EVENT_WIFI_DELETE_NETWORK, 
                          (void *)ssid, strlen(ssid) + 1, portMAX_DELAY);
         
-        // Backend automatycznie wyśle zaktualizowaną listę przez VIEW_EVENT_WIFI_SAVED_LIST
+        // Backend will automatically send updated list via VIEW_EVENT_WIFI_SAVED_LIST
     }
 }
 
 /**
- * @brief Callback: Użytkownik kliknął "+ Add Network"
+ * @brief Callback: User clicked "+ Add Network"
  */
 static void on_add_network_btn_clicked(lv_event_t *e)
 {
-    // Pokaż formularz do wpisania SSID i hasła
-    // ... (twój kod UI dla formularza) ...
+    // Show form for entering SSID and password
+    // ... (your UI code for form) ...
     
-    // Po wpisaniu i kliknięciu "Save":
-    const char *ssid = "UserEnteredSSID";      // Z formularza
-    const char *password = "UserEnteredPass";  // Z formularza
-    bool has_password = true;                  // Checkbox w UI
+    // After entering and clicking "Save":
+    const char *ssid = "UserEnteredSSID";      // From form
+    const char *password = "UserEnteredPass";  // From form
+    bool has_password = true;                  // Checkbox in UI
     
     struct view_data_wifi_config cfg = {0};
     strlcpy(cfg.ssid, ssid, sizeof(cfg.ssid));
@@ -181,15 +181,15 @@ static void on_add_network_btn_clicked(lv_event_t *e)
         cfg.have_password = false;
     }
     
-    // Zapisz do backendu
+    // Save to backend
     esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, 
                      VIEW_EVENT_WIFI_SAVE_NETWORK, &cfg, sizeof(cfg), portMAX_DELAY);
     
-    // Backend wyśle zaktualizowaną listę przez VIEW_EVENT_WIFI_SAVED_LIST
+    // Backend will send updated list via VIEW_EVENT_WIFI_SAVED_LIST
 }
 
 // ============================================================================
-// PRZYKŁAD 2: Menu System Info (Diagnostyka)
+// EXAMPLE 2: System Info Menu (Diagnostics)
 // ============================================================================
 
 static lv_obj_t *system_info_screen = NULL;
@@ -203,18 +203,18 @@ static lv_obj_t *label_author = NULL;
 static lv_obj_t *label_build = NULL;
 
 /**
- * @brief Stwórz ekran System Info
+ * @brief Create System Info screen
  */
 static void create_system_info_screen(void)
 {
     system_info_screen = lv_obj_create(NULL);
     
-    // Tytuł
+    // Title
     lv_obj_t *title = lv_label_create(system_info_screen);
     lv_label_set_text(title, "System Information");
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
     
-    // Kontener na dane (scrollable)
+    // Container for data (scrollable)
     lv_obj_t *cont = lv_obj_create(system_info_screen);
     lv_obj_set_size(cont, 440, 380);
     lv_obj_align(cont, LV_ALIGN_CENTER, 0, 10);
@@ -264,7 +264,7 @@ static void create_system_info_screen(void)
     label_build = lv_label_create(cont);
     lv_label_set_text(label_build, "Built: Loading...");
     
-    // Przycisk Back
+    // Back button
     lv_obj_t *btn_back = lv_btn_create(system_info_screen);
     lv_obj_add_event_cb(btn_back, on_back_btn_clicked, LV_EVENT_CLICKED, NULL);
     lv_obj_align(btn_back, LV_ALIGN_BOTTOM_MID, 0, -10);
@@ -273,7 +273,7 @@ static void create_system_info_screen(void)
 }
 
 /**
- * @brief Event handler: Backend przysłał system info (co 5 sekund)
+ * @brief Event handler: Backend sent system info (every 5 seconds)
  */
 static void handle_system_info_update(struct view_data_system_info *info)
 {
@@ -329,21 +329,21 @@ static void handle_system_info_update(struct view_data_system_info *info)
 }
 
 // ============================================================================
-// GŁÓWNY EVENT HANDLER (dodaj do indicator_view.c)
+// MAIN EVENT HANDLER (add to indicator_view.c)
 // ============================================================================
 
 /**
- * @brief Główny handler eventów z backendu
- * Dodaj te case'y do swojego istniejącego view_event_handler w indicator_view.c
+ * @brief Main event handler from backend
+ * Add these case's to your existing view_event_handler in indicator_view.c
  */
 static void view_event_handler(void* handler_args, esp_event_base_t base, 
                                int32_t id, void* event_data)
 {
     switch (id) {
-        // ... twoje istniejące case'y ...
+        // ... your existing case's ...
         
         case VIEW_EVENT_WIFI_SAVED_LIST: {
-            // Backend przysłał listę zapisanych sieci
+            // Backend sent list of saved networks
             struct view_data_wifi_saved_list *list = 
                 (struct view_data_wifi_saved_list *)event_data;
             handle_wifi_saved_list(list);
@@ -351,30 +351,30 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
         }
         
         case VIEW_EVENT_SYSTEM_INFO_UPDATE: {
-            // Backend przysłał aktualizację system info (co 5 sekund)
+            // Backend sent system info update (every 5 seconds)
             struct view_data_system_info *info = 
                 (struct view_data_system_info *)event_data;
             handle_system_info_update(info);
             break;
         }
         
-        // ... reszta twoich case'ów ...
+        // ... rest of your case's ...
     }
 }
 
 // ============================================================================
-// INICJALIZACJA (dodaj do indicator_view_init)
+// INITIALIZATION (add to indicator_view_init)
 // ============================================================================
 
 void indicator_view_init(void)
 {
-    // ... twój istniejący kod inicjalizacji ...
+    // ... your existing initialization code ...
     
-    // Stwórz nowe ekrany
+    // Create new screens
     create_saved_networks_screen();
     create_system_info_screen();
     
-    // Zarejestruj event handler
+    // Register event handler
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(
         view_event_handle, 
         VIEW_EVENT_BASE, 
@@ -393,35 +393,35 @@ void indicator_view_init(void)
         NULL
     ));
     
-    // ... reszta twojej inicjalizacji ...
+    // ... rest of your initialization ...
 }
 
 // ============================================================================
-// UWAGI KOŃCOWE
+// FINAL NOTES
 // ============================================================================
 
 /*
- * Ten kod to przykład/template. Musisz go dostosować do swojego stylu UI.
+ * This code is an example/template. You need to adapt it to your UI style.
  * 
- * KLUCZOWE PUNKTY:
+ * KEY POINTS:
  * 
- * 1. Backend AUTOMATYCZNIE wysyła:
- *    - VIEW_EVENT_SYSTEM_INFO_UPDATE co 5 sekund (zawsze)
- *    - VIEW_EVENT_WIFI_SAVED_LIST po każdym REQUEST lub zmianie listy
+ * 1. Backend AUTOMATICALLY sends:
+ *    - VIEW_EVENT_SYSTEM_INFO_UPDATE every 5 seconds (always)
+ *    - VIEW_EVENT_WIFI_SAVED_LIST after each REQUEST or list change
  * 
- * 2. UI musi TYLKO:
- *    - Wysłać VIEW_EVENT_WIFI_SAVED_LIST_REQ aby dostać listę
- *    - Odbierać VIEW_EVENT_WIFI_SAVED_LIST i wyświetlić dane
- *    - Odbierać VIEW_EVENT_SYSTEM_INFO_UPDATE i aktualizować labele
+ * 2. UI only needs to:
+ *    - Send VIEW_EVENT_WIFI_SAVED_LIST_REQ to get the list
+ *    - Receive VIEW_EVENT_WIFI_SAVED_LIST and display data
+ *    - Receive VIEW_EVENT_SYSTEM_INFO_UPDATE and update labels
  * 
- * 3. Auto-save działa automatycznie:
- *    - Po każdym udanym połączeniu WiFi, sieć jest automatycznie zapisywana
- *    - Nie musisz nic robić w UI
+ * 3. Auto-save works automatically:
+ *    - After each successful WiFi connection, network is automatically saved
+ *    - You don't need to do anything in UI
  * 
  * 4. User_data:
- *    - Używam lv_obj_set_user_data() do przechowywania SSID przy przyciskach
- *    - PAMIĘTAJ o free() jeśli używasz strdup() (lub użyj static buffer)
+ *    - Use lv_obj_set_user_data() to store SSID at buttons
+ *    - REMEMBER to free() if you use strdup() (or use static buffer)
  * 
  * 5. LVGL Mutex:
- *    - Zawsze używaj lv_port_sem_take/give gdy modyfikujesz UI z callbacku
+ *    - Always use lv_port_sem_take/give when modifying UI from callback
  */

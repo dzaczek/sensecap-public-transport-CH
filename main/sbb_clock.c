@@ -176,20 +176,20 @@
      double cos_v = cos(rad);
      double sin_v = sin(rad);
  
-     /* Punkty liczone względem środka tarczy (cx, cy) */
+     /* Points computed relative to dial center (cx, cy) */
      pts[0].x = cx + (lv_coord_t)(tip_len * cos_v);
      pts[0].y = cy + (lv_coord_t)(tip_len * sin_v);
      pts[1].x = cx - (lv_coord_t)(tail_len * cos_v);
      pts[1].y = cy - (lv_coord_t)(tail_len * sin_v);
  
-     /* Aktualizacja głównej wskazówki */
-     /* WAŻNE: Obiekt 'hand' ma rozmiar tarczy i jest na (0,0), więc punkty pasują idealnie */
+    /* Update main hand */
+    /* IMPORTANT: The 'hand' object has dial size and is at (0,0), so points fit perfectly */
      lv_line_set_points(hand, pts, 2);
      
      /* Aktualizacja cienia */
      if (shadow) {
          lv_line_set_points(shadow, pts, 2);
-         /* Wymuszamy odświeżenie cienia */
+         /* Force shadow refresh */
          lv_obj_invalidate(shadow); 
      }
  }
@@ -198,17 +198,17 @@
  {
      update_hand_line_with_shadow(c->second_hand, c->second_shadow, c->sec_pts, c->cx, c->cy, c->sec_tip, c->sec_tail, sec_deg);
  
-     /* Kropka sekundnika (lizak) */
+     /* Second hand dot (lollipop) */
      lv_coord_t tip_x = c->sec_pts[0].x;
      lv_coord_t tip_y = c->sec_pts[0].y;
      
      lv_coord_t dot_w = lv_obj_get_width(c->second_dot);
      lv_coord_t dot_h = lv_obj_get_height(c->second_dot);
  
-     /* Ustawiamy kropkę centralnie na końcówce linii */
+     /* Position dot centrally at line tip */
      lv_obj_set_pos(c->second_dot, tip_x - dot_w / 2, tip_y - dot_h / 2);
  
-     /* Cień kropki - przesuwamy go o stały offset względem kropki */
+     /* Dot shadow - offset from dot */
      if (c->dot_shadow) {
          lv_obj_set_pos(c->dot_shadow, 
                         tip_x - dot_w / 2 + SHADOW_OFFSET_X, 
@@ -246,14 +246,14 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
  
  static void create_dial_marks(sbb_clock_inst_t *c)
  {
-     /* Tarcza (białe kółko) jest rodzicem markerów. 
-        Współrzędne (0,0) to lewy górny róg białego kółka. */
+     /* The dial (white circle) is the parent of markers.
+        Coordinates (0,0) are the top-left corner of the white circle. */
      lv_obj_t *parent = c->dial;
      
-     /* Musimy znać środek relatywny do rodzica (czyli środek białego kółka) */
+     /* Need to know center relative to parent (i.e. center of white circle) */
      lv_coord_t center_x = c->size / 2;
      lv_coord_t center_y = c->size / 2;
-     lv_coord_t r = c->size / 2; // Promień to połowa rozmiaru tarczy
+     lv_coord_t r = c->size / 2;  /* Radius is half the dial size */
  
      lv_coord_t hour_mark_len = (r * 18) / 100;
      lv_coord_t hour_mark_w = 10;
@@ -275,7 +275,7 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
          lv_obj_clear_flag(mark, LV_OBJ_FLAG_SCROLLABLE);
  
          float angle = i * 6.0f;
-         float dist = r - (h / 2.0f); // Odległość środka markera od środka tarczy
+         float dist = r - (h / 2.0f);  /* Distance of marker center from dial center */
          double rad = (angle - 90.0) * M_PI / 180.0;
  
          lv_coord_t x = center_x + (lv_coord_t)(dist * cos(rad));
@@ -312,12 +312,12 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
  static lv_obj_t* create_shadow_line(lv_obj_t *parent, lv_coord_t size, lv_coord_t width)
  {
      lv_obj_t *shadow = lv_line_create(parent);
-     /* KLUCZOWA POPRAWKA: Ustawiamy rozmiar linii na CAŁY zegar.
-        Dzięki temu współrzędne (0,0) linii pokrywają się z (0,0) kontenera,
-        a obliczone punkty (cx, cy) są w dobrym miejscu. */
+     /* KEY FIX: Set line size to full clock.
+        Thus line coordinates (0,0) match container (0,0),
+        and computed points (cx, cy) are in the right place. */
      lv_obj_set_size(shadow, size, size);
      
-     /* Przesuwamy cały obiekt cienia o offset */
+     /* Offset the entire shadow object */
      lv_obj_set_pos(shadow, SHADOW_OFFSET_X, SHADOW_OFFSET_Y);
      
      lv_obj_set_style_line_width(shadow, width, LV_PART_MAIN);
@@ -346,9 +346,9 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      lv_obj_set_style_pad_all(cont, 0, LV_PART_MAIN);
      lv_obj_set_style_border_width(cont, 0, LV_PART_MAIN);
      lv_obj_set_style_radius(cont, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-     /* Clip corner musi być false, żeby wskazówki i cienie nie były ucięte przy obrocie */
+     /* Clip corner must be false so hands and shadows are not clipped on rotation */
      lv_obj_set_style_clip_corner(cont, false, LV_PART_MAIN);
-     lv_obj_set_style_bg_color(cont, lv_color_hex(0x1A1A1A), LV_PART_MAIN); // Ciemne tło zewnętrzne
+     lv_obj_set_style_bg_color(cont, lv_color_hex(0x1A1A1A), LV_PART_MAIN);  /* Dark outer background */
      lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
      lv_obj_set_user_data(cont, c);
      c->container = cont;
@@ -361,25 +361,25 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      lv_obj_set_style_border_width(c->dial, 0, LV_PART_MAIN);
      lv_obj_set_style_pad_all(c->dial, 0, LV_PART_MAIN);
      lv_obj_set_style_clip_corner(c->dial, false, LV_PART_MAIN);
-     lv_obj_center(c->dial); // Idealne wyśrodkowanie w kontenerze
+     lv_obj_center(c->dial);  /* Center in container */
      lv_obj_clear_flag(c->dial, LV_OBJ_FLAG_SCROLLABLE);
  
-     /* Markery rysujemy na tarczy */
+     /* Draw markers on the dial */
      create_dial_marks(c);
  
-     /* Wymiary wskazówek */
+     /* Hand dimensions */
      lv_coord_t hour_w = size / 15; if (hour_w < 8) hour_w = 8;
      lv_coord_t min_w = size / 35; if (min_w < 4) min_w = 4;
      lv_coord_t sec_w = 3;
      lv_coord_t dot_r = size / 20; if (dot_r < 5) dot_r = 5;
  
-     /* 3. Cienie (Pod spodem) */
-     /* Wszystkie cienie mają rozmiar całego zegara (size, size) */
+     /* 3. Shadows (below) */
+     /* All shadows have the full clock size (size, size) */
      c->hour_shadow = create_shadow_line(cont, size, hour_w);
      c->minute_shadow = create_shadow_line(cont, size, min_w);
      c->second_shadow = create_shadow_line(cont, size, sec_w);
      
-     /* Cień kropki */
+     /* Dot shadow */
      c->dot_shadow = lv_obj_create(cont);
      lv_obj_set_size(c->dot_shadow, dot_r * 2, dot_r * 2);
      lv_obj_set_style_radius(c->dot_shadow, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -387,15 +387,15 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      lv_obj_set_style_bg_opa(c->dot_shadow, SHADOW_OPACITY, LV_PART_MAIN);
      lv_obj_set_style_border_width(c->dot_shadow, 0, LV_PART_MAIN);
      lv_obj_clear_flag(c->dot_shadow, LV_OBJ_FLAG_SCROLLABLE);
-     /* Pozycję cienia kropki ustawiamy w funkcji update (relative to dot) */
+     /* Dot shadow position is set in update function (relative to dot) */
  
-     /* 4. Wskazówki (Na wierzchu) */
+     /* 4. Hands (on top) */
  
      /* Hour Hand */
      c->hour_tip = (c->r * 60) / 100;
      c->hour_tail = (c->r * 15) / 100;
      c->hour_hand = lv_line_create(cont);
-     /* KLUCZOWE: Wskazówka musi zajmować CAŁY obszar, żeby punkty (cx, cy) były w środku */
+     /* KEY: Hand must occupy full area so points (cx, cy) are in the center */
      lv_obj_set_size(c->hour_hand, size, size); 
      lv_obj_set_pos(c->hour_hand, 0, 0);
      lv_obj_set_style_line_width(c->hour_hand, hour_w, LV_PART_MAIN);
@@ -406,7 +406,7 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      c->min_tip = (c->r * 90) / 100;
      c->min_tail = (c->r * 20) / 100;
      c->minute_hand = lv_line_create(cont);
-     lv_obj_set_size(c->minute_hand, size, size); // KLUCZOWE
+     lv_obj_set_size(c->minute_hand, size, size);  /* KEY */
      lv_obj_set_pos(c->minute_hand, 0, 0);
      lv_obj_set_style_line_width(c->minute_hand, min_w, LV_PART_MAIN);
      lv_obj_set_style_line_color(c->minute_hand, lv_color_hex(0x000000), LV_PART_MAIN);
@@ -416,7 +416,7 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      c->sec_tip = (c->r * 90) / 100;
      c->sec_tail = (c->r * 30) / 100;
      c->second_hand = lv_line_create(cont);
-     lv_obj_set_size(c->second_hand, size, size); // KLUCZOWE
+     lv_obj_set_size(c->second_hand, size, size);  /* KEY */
      lv_obj_set_pos(c->second_hand, 0, 0);
      lv_obj_set_style_line_width(c->second_hand, sec_w, LV_PART_MAIN);
      lv_obj_set_style_line_color(c->second_hand, lv_color_hex(0xD40000), LV_PART_MAIN);
@@ -436,7 +436,7 @@ static void sbb_clock_update_internal(sbb_clock_t clock)
      lv_obj_set_style_radius(c->center_cap, LV_RADIUS_CIRCLE, LV_PART_MAIN);
      lv_obj_set_style_bg_color(c->center_cap, lv_color_hex(0x000000), LV_PART_MAIN);
      lv_obj_set_style_border_width(c->center_cap, 0, LV_PART_MAIN);
-     lv_obj_center(c->center_cap); // Wyśrodkowanie czapeczki
+     lv_obj_center(c->center_cap);  /* Center cap alignment */
      lv_obj_clear_flag(c->center_cap, LV_OBJ_FLAG_SCROLLABLE);
  
     c->timer = lv_timer_create(timer_cb, 10, c);
