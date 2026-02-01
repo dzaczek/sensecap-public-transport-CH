@@ -54,7 +54,7 @@ esp_err_t indicator_wifi_get_status(struct view_data_wifi_st *status);
 - ✅ Uptime, versions (IDF, App), author, build date
 - ✅ Event system: Auto-refresh every 5 seconds
 
-**Nowa struktura:**
+**New structure:**
 ```c
 struct view_data_system_info {
     // Memory
