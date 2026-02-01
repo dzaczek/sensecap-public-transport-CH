@@ -799,7 +799,8 @@ int indicator_city_init(void)
 {
     __g_http_com_sem = xSemaphoreCreateBinary();
     
-    xTaskCreate(&__indicator_http_task, "__indicator_http_task", 1024 * 5, NULL, 10, NULL);
+    // Increased stack from 5KB to 8KB for HTTP operations + Pomodoro overhead
+    xTaskCreate(&__indicator_http_task, "__indicator_http_task", 1024 * 8, NULL, 10, NULL);
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
                                                         VIEW_EVENT_BASE, VIEW_EVENT_WIFI_ST, 

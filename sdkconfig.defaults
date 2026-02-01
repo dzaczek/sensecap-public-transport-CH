@@ -34,6 +34,14 @@ CONFIG_FREERTOS_HZ=1000
 # Default 2048 was too small; stack overflow when refresh + display_schedule timers run.
 CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 
+# System event task stack (WiFi, TCP/IP events)
+# Increased from default 2304 to prevent stack overflow with Pomodoro timer
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+
+# Main task stack size (for app_main)
+# Increased to accommodate additional LVGL widgets
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
 
 CONFIG_LCD_AVOID_TEAR=y
 CONFIG_LCD_LVGL_DIRECT_MODE=y

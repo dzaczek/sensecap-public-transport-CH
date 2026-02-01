@@ -830,7 +830,8 @@ int indicator_wifi_init(void)
 
     __wifi_model_init();
     
-    xTaskCreate(&__indicator_wifi_task, "__indicator_wifi_task", 1024 * 5, NULL, 10, NULL);
+    // Increased stack from 5KB to 8KB to accommodate ping task + Pomodoro overhead
+    xTaskCreate(&__indicator_wifi_task, "__indicator_wifi_task", 1024 * 8, NULL, 10, NULL);
 
 
     ESP_ERROR_CHECK(esp_netif_init());

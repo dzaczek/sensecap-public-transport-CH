@@ -8,6 +8,7 @@
 #include "indicator_time.h"  // For time updates
 #include "indicator_display.h"  // For display config
 #include "sbb_clock.h"
+#include "indicator_pomodoro.h"  // Pomodoro timer
 #include "config.h"
 #include <string.h>
 #include <time.h>
@@ -27,6 +28,8 @@ static sbb_clock_t clock_widget = NULL;
 static lv_obj_t *bus_screen = NULL;
 static lv_obj_t *train_screen = NULL;
 static lv_obj_t *settings_screen = NULL;
+static lv_obj_t *pomodoro_screen = NULL;  /* Pomodoro timer tab */
+static lv_obj_t *pomodoro_tab = NULL;     /* Pomodoro tab container (for lazy init) */
 
 // Bus screen widgets
 static lv_obj_t *bus_stop_label = NULL;
@@ -283,8 +286,20 @@ static void tabview_event_cb(lv_event_t *e)
     uint16_t id = lv_tabview_get_tab_act(tv);
     ESP_LOGI(TAG, "Tab changed to %d", id);
     
+    // Lazy initialization of Pomodoro timer (Tab 3)
+    // Only create it when user first switches to this tab
+    if (id == 3 && pomodoro_screen == NULL && pomodoro_tab != NULL) {
+        ESP_LOGI(TAG, "Lazy initializing Pomodoro timer...");
+        pomodoro_screen = lv_indicator_pomodoro_init(pomodoro_tab);
+        if (pomodoro_screen) {
+            ESP_LOGI(TAG, "Pomodoro timer initialized on-demand");
+        } else {
+            ESP_LOGE(TAG, "Failed to initialize Pomodoro timer");
+        }
+    }
+    
     // Notify transport model about active screen
-    // 0 = Clock, 1 = Bus, 2 = Train, 3 = Settings
+    // 0 = Clock, 1 = Bus, 2 = Train, 3 = Pomodoro, 4 = Settings
     transport_data_notify_screen_change(id);
 }
 
@@ -3011,10 +3026,11 @@ int indicator_view_init(void)
         lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
     }
     
-    // Create tabs – Clock first, then Bus, Train, Settings
+    // Create tabs – Clock first, then Bus, Train, Pomodoro, Settings
     lv_obj_t *clock_tab = lv_tabview_add_tab(tabview, "Clock");
     lv_obj_t *bus_tab = lv_tabview_add_tab(tabview, "Bus");
     lv_obj_t *train_tab = lv_tabview_add_tab(tabview, "Train");
+    pomodoro_tab = lv_tabview_add_tab(tabview, LV_SYMBOL_LOOP " Timer");  // Global for lazy init
     lv_obj_t *settings_tab = lv_tabview_add_tab(tabview, "Settings");
     
     // Remove padding from tabs and ensure no focus ring
@@ -3026,6 +3042,9 @@ int indicator_view_init(void)
     
     lv_obj_set_style_pad_all(train_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(train_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
+    
+    lv_obj_set_style_pad_all(pomodoro_tab, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(pomodoro_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
     
     lv_obj_set_style_pad_all(settings_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(settings_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
@@ -3054,6 +3073,11 @@ int indicator_view_init(void)
     create_train_screen(train_tab);
     // Create details screen as child of train tab, so it overlays the train screen
     create_train_details_screen(train_tab);
+    
+    // Pomodoro timer will be initialized lazily when user switches to that tab
+    // (saves memory and speeds up startup)
+    pomodoro_screen = NULL;
+    
     create_settings_screen(settings_tab);
     /* Do not call update_station_buttons_availability() here – model (time, network) is not inited yet.
      * It will run on first VIEW_EVENT_SETTINGS_UPDATE or VIEW_EVENT_WIFI_ST after model init. */
