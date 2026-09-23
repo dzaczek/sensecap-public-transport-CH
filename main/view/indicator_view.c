@@ -1912,25 +1912,28 @@ static void update_connect_screen(const struct view_data_connections *data)
                 lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
                 lv_obj_add_event_cb(item, connect_result_item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
 
+                // Left: departure -> arrival time (plus a small delay badge right under it)
                 lv_obj_t *lbl_time = lv_label_create(item);
                 lv_label_set_text_fmt(lbl_time, "%s -> %s", c->departure_time, c->arrival_time);
                 lv_obj_set_style_text_color(lbl_time, lv_color_white(), 0);
                 lv_obj_set_style_text_font(lbl_time, &arimo_20, 0);
-                lv_obj_align(lbl_time, LV_ALIGN_TOP_LEFT, 5, 2);
-
-                lv_obj_t *lbl_meta = lv_label_create(item);
-                lv_label_set_text_fmt(lbl_meta, "%s, %d transfer%s", c->duration, c->transfers, c->transfers == 1 ? "" : "s");
-                lv_obj_set_style_text_color(lbl_meta, lv_color_hex(0xAAAAAA), 0);
-                lv_obj_set_style_text_font(lbl_meta, &arimo_14, 0);
-                lv_obj_align(lbl_meta, LV_ALIGN_BOTTOM_LEFT, 5, -2);
+                lv_obj_align(lbl_time, LV_ALIGN_LEFT_MID, 8, c->departure_delay >= 1 ? -10 : 0);
 
                 if (c->departure_delay >= 1) {
                     lv_obj_t *lbl_delay = lv_label_create(item);
-                    lv_label_set_text_fmt(lbl_delay, "+%d'", c->departure_delay);
-                    lv_obj_set_style_text_color(lbl_delay, lv_color_hex(0xFF0000), 0);
-                    lv_obj_set_style_text_font(lbl_delay, &arimo_16, 0);
-                    lv_obj_align(lbl_delay, LV_ALIGN_RIGHT_MID, -5, 0);
+                    lv_label_set_text_fmt(lbl_delay, "+%d' delay", c->departure_delay);
+                    lv_obj_set_style_text_color(lbl_delay, lv_color_hex(0xFF4444), 0);
+                    lv_obj_set_style_text_font(lbl_delay, &arimo_14, 0);
+                    lv_obj_align(lbl_delay, LV_ALIGN_LEFT_MID, 8, 14);
                 }
+
+                // Right: duration and transfer count - uses the space the square screen leaves free
+                lv_obj_t *lbl_meta = lv_label_create(item);
+                lv_label_set_text_fmt(lbl_meta, "%s\n%d transfer%s", c->duration, c->transfers, c->transfers == 1 ? "" : "s");
+                lv_obj_set_style_text_color(lbl_meta, lv_color_hex(0xAAAAAA), 0);
+                lv_obj_set_style_text_font(lbl_meta, &arimo_16, 0);
+                lv_obj_set_style_text_align(lbl_meta, LV_TEXT_ALIGN_RIGHT, 0);
+                lv_obj_align(lbl_meta, LV_ALIGN_RIGHT_MID, -8, 0);
             }
         }
     }
