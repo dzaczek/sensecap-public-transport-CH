@@ -16,6 +16,8 @@ LV_FONT_DECLARE(arimo_14);
 LV_FONT_DECLARE(arimo_16);
 LV_FONT_DECLARE(arimo_20);
 LV_FONT_DECLARE(arimo_24);
+LV_FONT_DECLARE(arimo_bold_16);
+LV_FONT_DECLARE(arimo_bold_20);
 
 
 static const char *TAG = "view";
@@ -41,11 +43,18 @@ static lv_obj_t *bus_selection_cont = NULL;
 static lv_obj_t *bus_view_cont = NULL;
 static lv_obj_t *bus_loading_cont = NULL;
 
+// LED-style board screen widgets (ZVV-style departure board)
+static lv_obj_t *board_screen = NULL;
+static lv_obj_t *board_stop_label = NULL;
+static lv_obj_t *board_list = NULL;
+
 // Forward declarations
 static void update_bus_screen(const struct view_data_bus_countdown *data);
+static void update_board_screen(const struct view_data_bus_countdown *data);
 static void update_train_screen(const struct view_data_train_station *data);
 static void update_settings_screen(const struct view_data_settings *data);
 static void create_bus_screen(lv_obj_t *parent);
+static void create_board_screen(lv_obj_t *parent);
 static void create_train_screen(lv_obj_t *parent);
 static void create_settings_screen(lv_obj_t *parent);
 static void refresh_btn_cb(lv_event_t *e);
@@ -283,10 +292,19 @@ static void tabview_event_cb(lv_event_t *e)
     lv_obj_t *tv = lv_event_get_target(e);
     uint16_t id = lv_tabview_get_tab_act(tv);
     ESP_LOGI(TAG, "Tab changed to %d", id);
-    
-    // Notify transport model about active screen
-    // 0 = Clock, 1 = Bus, 2 = Train, 3 = Settings
-    transport_data_notify_screen_change(id);
+
+    // Tabs: 0=Clock, 1=Bus, 2=Board, 3=Train, 4=Settings.
+    // transport_data's refresh scheduler only knows 0=bus-active, 1=train-active,
+    // else=skip, so map the tabs that consume bus data (Clock/Bus/Board) to 0.
+    int logical_screen;
+    if (id == 3) {
+        logical_screen = 1; // Train
+    } else if (id == 4) {
+        logical_screen = 2; // Settings - no live data needed
+    } else {
+        logical_screen = 0; // Clock, Bus, Board - all show bus countdown data
+    }
+    transport_data_notify_screen_change(logical_screen);
 }
 
 /**
@@ -735,7 +753,94 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
         strftime(time_str, sizeof(time_str), "%d.%m.%Y %H:%M", &timeinfo);
         lv_label_set_text(bus_time_label, time_str);
     }
-    
+
+    lv_port_sem_give();
+}
+
+/* Amber LED color used across the ZVV-style departure board (approximation of the
+ * physical dot-matrix board's warm amber, see PR discussion for reference photos). */
+#define BOARD_LED_AMBER   0xFFB500
+#define BOARD_ROW_HEIGHT  54
+#define BOARD_LINE_COL_W  62
+
+/**
+ * @brief Update the LED-style departure board (ZVV street-display look)
+ *
+ * Shows the soonest departures across all directions from the configured bus
+ * stop, one per row, sorted (already done by transport_data). Row count is
+ * computed from the available screen height so the board fills the screen.
+ */
+static void update_board_screen(const struct view_data_bus_countdown *data)
+{
+    if (!board_screen || !data) return;
+
+    lv_port_sem_take();
+
+    if (board_stop_label) {
+        lv_label_set_text(board_stop_label, data->stop_name[0] ? data->stop_name : BUS_STOP_NAME);
+    }
+
+    if (board_list) {
+        lv_obj_clean(board_list);
+
+        lv_obj_update_layout(board_list);
+        lv_coord_t avail_h = lv_obj_get_content_height(board_list);
+        int rows_capacity = avail_h / BOARD_ROW_HEIGHT;
+        if (rows_capacity < 1) rows_capacity = 1;
+
+        int shown = 0;
+        for (int i = 0; i < data->count && i < MAX_DEPARTURES && shown < rows_capacity; i++) {
+            if (!data->departures[i].valid) continue;
+
+            lv_obj_t *row = lv_obj_create(board_list);
+            lv_obj_set_size(row, LV_PCT(100), BOARD_ROW_HEIGHT);
+            lv_obj_set_style_bg_color(row, lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_set_style_border_width(row, 0, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
+            lv_obj_set_style_radius(row, 0, LV_PART_MAIN);
+            lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+            // Line number, left column
+            lv_obj_t *line_lbl = lv_label_create(row);
+            lv_label_set_text(line_lbl, data->departures[i].line);
+            lv_obj_set_style_text_font(line_lbl, &arimo_bold_20, LV_PART_MAIN);
+            lv_obj_set_style_text_color(line_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+            lv_obj_align(line_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+
+            // Destination, fixed-position middle column so it lines up row to row
+            lv_obj_t *dest_lbl = lv_label_create(row);
+            lv_label_set_text(dest_lbl, data->departures[i].destination);
+            lv_obj_set_style_text_font(dest_lbl, &arimo_bold_16, LV_PART_MAIN);
+            lv_obj_set_style_text_color(dest_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+            lv_label_set_long_mode(dest_lbl, LV_LABEL_LONG_DOT);
+            lv_obj_set_width(dest_lbl, LV_PCT(100) - BOARD_LINE_COL_W - 70);
+            lv_obj_align(dest_lbl, LV_ALIGN_LEFT_MID, BOARD_LINE_COL_W, 0);
+
+            // Minutes, right column - replaced by an arrival marker at/under 0
+            lv_obj_t *min_lbl = lv_label_create(row);
+            char min_text[16];
+            if (data->departures[i].minutes_until <= 0) {
+                snprintf(min_text, sizeof(min_text), "\xc2\xbb"); // "»" - vehicle at stop
+            } else {
+                snprintf(min_text, sizeof(min_text), "%d'", data->departures[i].minutes_until);
+            }
+            lv_label_set_text(min_lbl, min_text);
+            lv_obj_set_style_text_font(min_lbl, &arimo_bold_20, LV_PART_MAIN);
+            lv_obj_set_style_text_color(min_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+            lv_obj_align(min_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
+
+            shown++;
+        }
+
+        if (shown == 0) {
+            lv_obj_t *empty_lbl = lv_label_create(board_list);
+            lv_label_set_text(empty_lbl, data->api_error ? data->error_msg : "No departures");
+            lv_obj_set_style_text_font(empty_lbl, &arimo_bold_16, LV_PART_MAIN);
+            lv_obj_set_style_text_color(empty_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+        }
+    }
+
     lv_port_sem_give();
 }
 
@@ -1388,6 +1493,45 @@ static void create_bus_screen(lv_obj_t *parent)
     lv_label_set_text(bus_status_label, "");
     lv_obj_set_style_text_color(bus_status_label, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_align(bus_status_label, LV_ALIGN_TOP_LEFT, 10, 30);
+}
+
+/**
+ * @brief Create the LED-style departure board (black background, amber text,
+ * modeled after the physical VBZ/ZVV street departure displays). Reuses the
+ * same bus countdown data as the Bus screen but renders all directions
+ * together, sorted by time, one line per row, filling the whole screen.
+ */
+static void create_board_screen(lv_obj_t *parent)
+{
+    board_screen = lv_obj_create(parent);
+    lv_obj_set_size(board_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(board_screen, 0, 0);
+    lv_obj_set_style_border_width(board_screen, 0, 0);
+    lv_obj_set_style_bg_color(board_screen, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(board_screen, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(board_screen, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_flex_flow(board_screen, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(board_screen, 0, 0);
+
+    // Thin, dimmer header strip with the stop name (matches the "Monbijou"-style variant)
+    board_stop_label = lv_label_create(board_screen);
+    lv_label_set_text(board_stop_label, BUS_STOP_NAME);
+    lv_obj_set_style_text_font(board_stop_label, &arimo_16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(board_stop_label, lv_color_hex(0xAAAAAA), LV_PART_MAIN);
+    lv_obj_set_style_pad_top(board_stop_label, 6, 0);
+    lv_obj_set_style_pad_bottom(board_stop_label, 4, 0);
+    lv_obj_set_style_pad_left(board_stop_label, 8, 0);
+
+    // Departure rows - height auto-computed at update time to fill the rest of the screen
+    board_list = lv_obj_create(board_screen);
+    lv_obj_set_width(board_list, LV_PCT(100));
+    lv_obj_set_flex_grow(board_list, 1);
+    lv_obj_set_style_bg_color(board_list, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(board_list, 0, 0);
+    lv_obj_set_style_pad_row(board_list, 2, 0);
+    lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
 }
 
 /**
@@ -2899,9 +3043,10 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
 {
     switch (id) {
         case VIEW_EVENT_BUS_COUNTDOWN_UPDATE: {
-            const struct view_data_bus_countdown *data = 
+            const struct view_data_bus_countdown *data =
                 (const struct view_data_bus_countdown *)event_data;
             update_bus_screen(data);
+            update_board_screen(data);
             break;
         }
         case VIEW_EVENT_TRAIN_STATION_UPDATE: {
@@ -3012,19 +3157,23 @@ int indicator_view_init(void)
         lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
     }
     
-    // Create tabs – Clock first, then Bus, Train, Settings
+    // Create tabs – Clock first, then Bus, Board, Train, Settings
     lv_obj_t *clock_tab = lv_tabview_add_tab(tabview, "Clock");
     lv_obj_t *bus_tab = lv_tabview_add_tab(tabview, "Bus");
+    lv_obj_t *board_tab = lv_tabview_add_tab(tabview, "Board");
     lv_obj_t *train_tab = lv_tabview_add_tab(tabview, "Train");
     lv_obj_t *settings_tab = lv_tabview_add_tab(tabview, "Settings");
-    
+
     // Remove padding from tabs and ensure no focus ring
     lv_obj_set_style_pad_all(clock_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(clock_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
-    
+
     lv_obj_set_style_pad_all(bus_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(bus_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
-    
+
+    lv_obj_set_style_pad_all(board_tab, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(board_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
+
     lv_obj_set_style_pad_all(train_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(train_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
     
@@ -3052,6 +3201,7 @@ int indicator_view_init(void)
     // Create screens
     create_bus_screen(bus_tab);
     create_bus_details_screen(bus_tab);
+    create_board_screen(board_tab);
     create_train_screen(train_tab);
     // Create details screen as child of train tab, so it overlays the train screen
     create_train_details_screen(train_tab);
