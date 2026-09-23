@@ -275,7 +275,16 @@ void connections_data_search_stations(const char *query)
     }
 
     g_station_search_in_progress = true;
-    xTaskCreate(fetch_station_search_task, "station_search", 8192, query_copy, 5, NULL);
+    if (xTaskCreate(fetch_station_search_task, "station_search", 8192, query_copy, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create station search task");
+        struct view_data_station_search result = {0};
+        result.api_error = true;
+        extern esp_event_loop_handle_t view_event_handle;
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_STATION_SEARCH_RESULTS,
+                           &result, sizeof(result), portMAX_DELAY);
+        free(query_copy);
+        g_station_search_in_progress = false;
+    }
 }
 
 /**
@@ -508,7 +517,15 @@ void connections_data_fetch(void)
     }
 
     g_connections_fetch_in_progress = true;
-    xTaskCreate(fetch_connections_task, "fetch_conn", 8192, NULL, 5, NULL);
+    if (xTaskCreate(fetch_connections_task, "fetch_conn", 8192, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create connections fetch task");
+        g_connections_data.api_error = true;
+        strncpy(g_connections_data.error_msg, "Out of memory", sizeof(g_connections_data.error_msg) - 1);
+        extern esp_event_loop_handle_t view_event_handle;
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_CONNECTIONS_UPDATE,
+                           &g_connections_data, sizeof(g_connections_data), portMAX_DELAY);
+        g_connections_fetch_in_progress = false;
+    }
 }
 
 esp_err_t connections_data_init(void)
