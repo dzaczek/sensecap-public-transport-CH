@@ -91,7 +91,24 @@ struct view_data_display {
     int   brightness; // 0~100
     bool  sleep_mode_en;
     int   sleep_mode_time_min;  // 0 = always on, 1, 5, 10, 30, 60 minutes
+
+    // Scheduled on/off (e.g. "on weekdays 08:00-16:00"), independent of sleep_mode above
+    bool    schedule_en;
+    uint8_t schedule_days;      // bit0=Monday .. bit6=Sunday
+    int     schedule_on_hour;   // 0-23
+    int     schedule_on_min;    // 0-59
+    int     schedule_off_hour;  // 0-23
+    int     schedule_off_min;   // 0-59
 };
+
+#define SCHEDULE_DAY_MON (1 << 0)
+#define SCHEDULE_DAY_TUE (1 << 1)
+#define SCHEDULE_DAY_WED (1 << 2)
+#define SCHEDULE_DAY_THU (1 << 3)
+#define SCHEDULE_DAY_FRI (1 << 4)
+#define SCHEDULE_DAY_SAT (1 << 5)
+#define SCHEDULE_DAY_SUN (1 << 6)
+#define SCHEDULE_DAYS_WEEKDAYS (SCHEDULE_DAY_MON | SCHEDULE_DAY_TUE | SCHEDULE_DAY_WED | SCHEDULE_DAY_THU | SCHEDULE_DAY_FRI)
 
 // Time configuration
 struct view_data_time_cfg {

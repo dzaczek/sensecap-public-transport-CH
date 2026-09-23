@@ -91,6 +91,8 @@ static void prev_btn_cb(lv_event_t *e);
 static void next_btn_cb(lv_event_t *e);
 static void brightness_slider_cb(lv_event_t *e);
 static void sleep_slider_cb(lv_event_t *e);
+static void schedule_on_slider_cb(lv_event_t *e);
+static void schedule_off_slider_cb(lv_event_t *e);
 static void display_apply_btn_cb(lv_event_t *e);
 static void time_update_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
 static void view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data);
@@ -187,6 +189,12 @@ static lv_obj_t *api_status_label = NULL;
 static lv_obj_t *brightness_slider = NULL;
 static lv_obj_t *brightness_label = NULL;
 static lv_obj_t *sleep_slider = NULL;
+static lv_obj_t *schedule_enable_checkbox = NULL;
+static lv_obj_t *schedule_day_checkboxes[7] = {0}; // index 0=Monday .. 6=Sunday
+static lv_obj_t *schedule_on_slider = NULL;
+static lv_obj_t *schedule_on_label = NULL;
+static lv_obj_t *schedule_off_slider = NULL;
+static lv_obj_t *schedule_off_label = NULL;
 static lv_obj_t *sleep_label = NULL;
 
 // Flag to prevent slider updates during user interaction
@@ -600,6 +608,26 @@ static void sleep_slider_cb(lv_event_t *e)
 }
 
 /**
+ * @brief Schedule "on" hour slider callback - just updates label (apply saves config)
+ */
+static void schedule_on_slider_cb(lv_event_t *e)
+{
+    display_settings_user_editing = true;
+    int32_t hour = lv_slider_get_value(lv_event_get_target(e));
+    lv_label_set_text_fmt(schedule_on_label, "On: %02d:00", (int)hour);
+}
+
+/**
+ * @brief Schedule "off" hour slider callback - just updates label (apply saves config)
+ */
+static void schedule_off_slider_cb(lv_event_t *e)
+{
+    display_settings_user_editing = true;
+    int32_t hour = lv_slider_get_value(lv_event_get_target(e));
+    lv_label_set_text_fmt(schedule_off_label, "Off: %02d:00", (int)hour);
+}
+
+/**
  * @brief Apply button callback - saves display configuration
  */
 static void display_apply_btn_cb(lv_event_t *e)
@@ -620,9 +648,23 @@ static void display_apply_btn_cb(lv_event_t *e)
     const int timeout_minutes[] = {0, 1, 5, 10, 30, 60};
     cfg.sleep_mode_time_min = timeout_minutes[index];
     cfg.sleep_mode_en = (cfg.sleep_mode_time_min > 0);
-    
-    ESP_LOGI(TAG, "Applying display config: brightness=%d, timeout=%d min, enabled=%d", 
-             cfg.brightness, cfg.sleep_mode_time_min, cfg.sleep_mode_en);
+
+    // Scheduled on/off
+    cfg.schedule_en = schedule_enable_checkbox && lv_obj_has_state(schedule_enable_checkbox, LV_STATE_CHECKED);
+    cfg.schedule_days = 0;
+    for (int i = 0; i < 7; i++) {
+        if (schedule_day_checkboxes[i] && lv_obj_has_state(schedule_day_checkboxes[i], LV_STATE_CHECKED)) {
+            cfg.schedule_days |= (1 << i);
+        }
+    }
+    cfg.schedule_on_hour = schedule_on_slider ? (int)lv_slider_get_value(schedule_on_slider) : 8;
+    cfg.schedule_on_min = 0;
+    cfg.schedule_off_hour = schedule_off_slider ? (int)lv_slider_get_value(schedule_off_slider) : 16;
+    cfg.schedule_off_min = 0;
+
+    ESP_LOGI(TAG, "Applying display config: brightness=%d, timeout=%d min, enabled=%d, schedule=%d days=0x%02x %02d:00-%02d:00",
+             cfg.brightness, cfg.sleep_mode_time_min, cfg.sleep_mode_en,
+             cfg.schedule_en, cfg.schedule_days, cfg.schedule_on_hour, cfg.schedule_off_hour);
     
     // Clear editing flag - allow updates now
     display_settings_user_editing = false;
@@ -1389,7 +1431,32 @@ static void update_display_settings(const struct view_data_display *cfg)
             lv_label_set_text(sleep_label, buf);
         }
     }
-    
+
+    // Scheduled on/off
+    if (schedule_enable_checkbox) {
+        if (cfg->schedule_en) {
+            lv_obj_add_state(schedule_enable_checkbox, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(schedule_enable_checkbox, LV_STATE_CHECKED);
+        }
+    }
+    for (int i = 0; i < 7; i++) {
+        if (!schedule_day_checkboxes[i]) continue;
+        if (cfg->schedule_days & (1 << i)) {
+            lv_obj_add_state(schedule_day_checkboxes[i], LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(schedule_day_checkboxes[i], LV_STATE_CHECKED);
+        }
+    }
+    if (schedule_on_slider) {
+        lv_slider_set_value(schedule_on_slider, cfg->schedule_on_hour, LV_ANIM_OFF);
+        if (schedule_on_label) lv_label_set_text_fmt(schedule_on_label, "On: %02d:00", cfg->schedule_on_hour);
+    }
+    if (schedule_off_slider) {
+        lv_slider_set_value(schedule_off_slider, cfg->schedule_off_hour, LV_ANIM_OFF);
+        if (schedule_off_label) lv_label_set_text_fmt(schedule_off_label, "Off: %02d:00", cfg->schedule_off_hour);
+    }
+
     lv_port_sem_give();
 }
 
@@ -3773,10 +3840,58 @@ static void create_settings_screen(lv_obj_t *parent)
     lv_slider_set_value(sleep_slider, 0, LV_ANIM_OFF);
     lv_obj_add_event_cb(sleep_slider, sleep_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
+    // --- Scheduled on/off (e.g. weekdays 08:00-16:00) ---
+    schedule_enable_checkbox = lv_checkbox_create(display_settings_cont);
+    lv_checkbox_set_text(schedule_enable_checkbox, "Scheduled on/off");
+    lv_obj_set_style_text_font(schedule_enable_checkbox, &arimo_16, 0);
+    lv_obj_align(schedule_enable_checkbox, LV_ALIGN_TOP_LEFT, 10, 215);
+
+    lv_obj_t *days_cont = lv_obj_create(display_settings_cont);
+    lv_obj_set_size(days_cont, LV_PCT(80), 40);
+    lv_obj_align(days_cont, LV_ALIGN_TOP_LEFT, 10, 250);
+    lv_obj_set_style_bg_opa(days_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(days_cont, 0, 0);
+    lv_obj_set_style_pad_all(days_cont, 0, 0);
+    lv_obj_set_flex_flow(days_cont, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(days_cont, 4, 0);
+    lv_obj_clear_flag(days_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    static const char *day_letters[7] = {"M", "T", "W", "T", "F", "S", "S"};
+    for (int i = 0; i < 7; i++) {
+        schedule_day_checkboxes[i] = lv_checkbox_create(days_cont);
+        lv_checkbox_set_text(schedule_day_checkboxes[i], day_letters[i]);
+        lv_obj_set_style_text_font(schedule_day_checkboxes[i], &arimo_14, 0);
+        lv_obj_set_style_pad_column(schedule_day_checkboxes[i], 2, 0);
+    }
+
+    schedule_on_label = lv_label_create(display_settings_cont);
+    lv_label_set_text(schedule_on_label, "On: 08:00");
+    lv_obj_align(schedule_on_label, LV_ALIGN_TOP_LEFT, 10, 300);
+    lv_obj_set_style_text_color(schedule_on_label, lv_color_white(), 0);
+
+    schedule_on_slider = lv_slider_create(display_settings_cont);
+    lv_obj_set_size(schedule_on_slider, LV_PCT(80), 20);
+    lv_obj_align(schedule_on_slider, LV_ALIGN_TOP_LEFT, 10, 325);
+    lv_slider_set_range(schedule_on_slider, 0, 23);
+    lv_slider_set_value(schedule_on_slider, 8, LV_ANIM_OFF);
+    lv_obj_add_event_cb(schedule_on_slider, schedule_on_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    schedule_off_label = lv_label_create(display_settings_cont);
+    lv_label_set_text(schedule_off_label, "Off: 16:00");
+    lv_obj_align(schedule_off_label, LV_ALIGN_TOP_LEFT, 10, 355);
+    lv_obj_set_style_text_color(schedule_off_label, lv_color_white(), 0);
+
+    schedule_off_slider = lv_slider_create(display_settings_cont);
+    lv_obj_set_size(schedule_off_slider, LV_PCT(80), 20);
+    lv_obj_align(schedule_off_slider, LV_ALIGN_TOP_LEFT, 10, 380);
+    lv_slider_set_range(schedule_off_slider, 0, 23);
+    lv_slider_set_value(schedule_off_slider, 16, LV_ANIM_OFF);
+    lv_obj_add_event_cb(schedule_off_slider, schedule_off_slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
     // Apply button to save configuration
     display_apply_btn = lv_btn_create(display_settings_cont);
-    lv_obj_set_size(display_apply_btn, LV_PCT(80), 50);
-    lv_obj_align(display_apply_btn, LV_ALIGN_TOP_LEFT, 10, 230);
+    lv_obj_set_size(display_apply_btn, LV_PCT(80), 45);
+    lv_obj_align(display_apply_btn, LV_ALIGN_TOP_LEFT, 10, 420);
     lv_obj_set_style_bg_color(display_apply_btn, lv_color_hex(0x008000), 0); // Green
     lv_obj_add_event_cb(display_apply_btn, display_apply_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *apply_lbl = lv_label_create(display_apply_btn);
