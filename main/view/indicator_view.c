@@ -767,30 +767,42 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 #define BOARD_LINE_COL_W  40   /* fixed-width line-number column so destinations start at the same x on every row */
 
 /**
- * @brief Small vector vehicle icon (amber rounded box with a windshield
- * divider line) shown instead of the minutes countdown once a departure
- * reaches the stop - no bitmap/font asset needed, just plain LVGL shapes.
+ * @brief Small vector vehicle icon - a front-on tram/bus silhouette (portrait
+ * body, dark windshield, two feet at the bottom) matching the pictogram on
+ * the real VBZ/ZVV board, shown instead of the minutes countdown once a
+ * departure reaches the stop. No bitmap/font asset needed, just plain LVGL
+ * shapes: an amber body with two black "cutout" rectangles punched into it.
  */
 static void create_board_bus_icon(lv_obj_t *parent)
 {
     lv_obj_t *icon = lv_obj_create(parent);
-    lv_obj_set_size(icon, 22, 16);
+    lv_obj_set_size(icon, 16, 20);
     lv_obj_set_style_bg_color(icon, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(icon, 3, LV_PART_MAIN);
+    lv_obj_set_style_radius(icon, 4, LV_PART_MAIN);
     lv_obj_set_style_pad_all(icon, 0, LV_PART_MAIN);
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(icon, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    /* Windshield divider - a thin black bar punched into the top third of the icon */
-    lv_obj_t *divider = lv_obj_create(icon);
-    lv_obj_set_size(divider, 16, 2);
-    lv_obj_set_style_bg_color(divider, lv_color_hex(0x000000), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(divider, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(divider, LV_ALIGN_TOP_MID, 0, 4);
+    /* Windshield - a dark rectangle cut into the upper body, leaving a thin amber roof strip above it */
+    lv_obj_t *window = lv_obj_create(icon);
+    lv_obj_set_size(window, 10, 7);
+    lv_obj_set_style_bg_color(window, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(window, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(window, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(window, 1, LV_PART_MAIN);
+    lv_obj_clear_flag(window, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(window, LV_ALIGN_TOP_MID, 0, 4);
+
+    /* Two feet at the bottom - a dark notch punched into the bottom-center splits the base in two */
+    lv_obj_t *notch = lv_obj_create(icon);
+    lv_obj_set_size(notch, 6, 4);
+    lv_obj_set_style_bg_color(notch, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(notch, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(notch, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(notch, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(notch, LV_ALIGN_BOTTOM_MID, 0, 0);
 }
 
 /**
