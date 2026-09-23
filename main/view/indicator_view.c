@@ -801,6 +801,27 @@ static void create_board_bus_icon(lv_obj_t *parent)
 }
 
 /**
+ * @brief Draw amber board text as bold: the source font (DotGothic16) only
+ * ships a regular weight, so weight is faked by stamping the same label
+ * twice, one pixel apart, which thickens every stroke.
+ */
+static void create_board_label(lv_obj_t *parent, const char *text, const lv_font_t *font,
+                                lv_coord_t max_width, lv_align_t align, lv_coord_t x_ofs, lv_coord_t y_ofs)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        lv_obj_t *lbl = lv_label_create(parent);
+        lv_label_set_text(lbl, text);
+        lv_obj_set_style_text_font(lbl, font, LV_PART_MAIN);
+        lv_obj_set_style_text_color(lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+        if (max_width > 0) {
+            lv_obj_set_width(lbl, max_width);
+            lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+        }
+        lv_obj_align(lbl, align, x_ofs + pass, y_ofs);
+    }
+}
+
+/**
  * @brief Update the LED-style departure board (ZVV street-display look)
  *
  * Shows the soonest departures across all directions from the configured bus
@@ -835,42 +856,33 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
             // Line number, left column
-            lv_obj_t *line_lbl = lv_label_create(row);
-            lv_label_set_text(line_lbl, data->departures[i].line);
-            lv_obj_set_style_text_font(line_lbl, &led_matrix_20, LV_PART_MAIN);
-            lv_obj_set_style_text_color(line_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
-            lv_obj_align(line_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+            create_board_label(row, data->departures[i].line, &led_matrix_20, 0, LV_ALIGN_LEFT_MID, 8, 0);
 
             // Destination, fixed-position middle column so it lines up row to row
-            lv_obj_t *dest_lbl = lv_label_create(row);
-            lv_label_set_text(dest_lbl, data->departures[i].destination);
-            lv_obj_set_style_text_font(dest_lbl, &led_matrix_16, LV_PART_MAIN);
-            lv_obj_set_style_text_color(dest_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
-            lv_label_set_long_mode(dest_lbl, LV_LABEL_LONG_DOT);
-            lv_obj_set_width(dest_lbl, LV_PCT(100) - BOARD_LINE_COL_W - 70);
-            lv_obj_align(dest_lbl, LV_ALIGN_LEFT_MID, BOARD_LINE_COL_W, 0);
+            create_board_label(row, data->departures[i].destination, &led_matrix_16,
+                                LV_PCT(100) - BOARD_LINE_COL_W - 70, LV_ALIGN_LEFT_MID, BOARD_LINE_COL_W, 0);
 
             // Minutes, right column - replaced by a bus icon once at the stop
             if (data->departures[i].minutes_until <= 0) {
                 create_board_bus_icon(row);
             } else {
-                lv_obj_t *min_lbl = lv_label_create(row);
                 char min_text[16];
                 snprintf(min_text, sizeof(min_text), "%d'", data->departures[i].minutes_until);
-                lv_label_set_text(min_lbl, min_text);
-                lv_obj_set_style_text_font(min_lbl, &led_matrix_20, LV_PART_MAIN);
-                lv_obj_set_style_text_color(min_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
-                lv_obj_align(min_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
+                create_board_label(row, min_text, &led_matrix_20, 0, LV_ALIGN_RIGHT_MID, -8, 0);
             }
 
             shown++;
         }
 
         if (shown == 0) {
-            lv_obj_t *empty_lbl = lv_label_create(board_list);
-            lv_label_set_text(empty_lbl, data->api_error ? data->error_msg : "No departures");
-            lv_obj_set_style_text_font(empty_lbl, &led_matrix_16, LV_PART_MAIN);
-            lv_obj_set_style_text_color(empty_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+            lv_obj_t *empty_cont = lv_obj_create(board_list);
+            lv_obj_set_size(empty_cont, LV_PCT(100), BOARD_ROW_HEIGHT);
+            lv_obj_set_style_bg_opa(empty_cont, LV_OPA_TRANSP, LV_PART_MAIN);
+            lv_obj_set_style_border_width(empty_cont, 0, LV_PART_MAIN);
+            lv_obj_set_style_pad_all(empty_cont, 0, LV_PART_MAIN);
+            lv_obj_clear_flag(empty_cont, LV_OBJ_FLAG_SCROLLABLE);
+            create_board_label(empty_cont, data->api_error ? data->error_msg : "No departures",
+                                &led_matrix_16, 0, LV_ALIGN_LEFT_MID, 8, 0);
         }
     }
 
@@ -1591,6 +1603,29 @@ static void bus_board_toggle_btn_cb(lv_event_t *e)
     lv_obj_t *lbl = lv_obj_get_child(bus_board_toggle_btn, 0);
     if (lbl) {
         lv_label_set_text(lbl, bus_board_view_active ? "List" : "LED");
+    }
+
+    // Restyle the top button row to match the black/amber board look while it's shown
+    lv_color_t amber = lv_color_hex(BOARD_LED_AMBER);
+    lv_obj_t *btns[] = { bus_refresh_btn, bus_next_btn, bus_prev_btn, bus_back_btn, bus_board_toggle_btn };
+    lv_color_t default_bg[] = { lv_color_hex(0x008000), lv_color_hex(0x444444), lv_color_hex(0x444444),
+                                 lv_color_hex(0x444444), lv_color_hex(0x444444) };
+    for (int i = 0; i < 5; i++) {
+        if (!btns[i]) continue;
+        lv_obj_set_style_bg_color(btns[i], bus_board_view_active ? lv_color_hex(0x000000) : default_bg[i], LV_PART_MAIN);
+        lv_obj_set_style_border_width(btns[i], bus_board_view_active ? 1 : 0, LV_PART_MAIN);
+        lv_obj_set_style_border_color(btns[i], amber, LV_PART_MAIN);
+        lv_obj_t *btn_lbl = lv_obj_get_child(btns[i], 0);
+        if (btn_lbl) {
+            lv_obj_set_style_text_color(btn_lbl, bus_board_view_active ? amber : lv_color_white(), LV_PART_MAIN);
+        }
+    }
+    if (bus_stop_label) {
+        lv_obj_set_style_text_color(bus_stop_label, bus_board_view_active ? amber : lv_color_white(), LV_PART_MAIN);
+    }
+    if (bus_view_cont) {
+        lv_obj_set_style_bg_opa(bus_view_cont, bus_board_view_active ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(bus_view_cont, lv_color_hex(0x000000), LV_PART_MAIN);
     }
 }
 
