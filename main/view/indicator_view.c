@@ -75,7 +75,8 @@ typedef struct {
 static const station_t predefined_bus_stops[] = {
     {"Aarau, Gais", "8590142"},
     {"Aarau Bahnhof", "8502996"},
-    {"Aarau, Acheberstrasse", "8588428"}
+    {"Aarau, Acheberstrasse", "8588428"},
+    {"Zürich, Wollishoferplatz", "8591439"}
 };
 
 // View state
