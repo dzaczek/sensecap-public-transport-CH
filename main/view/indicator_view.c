@@ -765,6 +765,42 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 #define BOARD_LINE_COL_W  62
 
 /**
+ * @brief Small vector bus icon (amber body, black wheel cutouts) shown instead
+ * of the minutes countdown once a departure reaches the stop - no bitmap/font
+ * asset needed, just a couple of plain LVGL shapes.
+ */
+static void create_board_bus_icon(lv_obj_t *parent)
+{
+    lv_obj_t *icon = lv_obj_create(parent);
+    lv_obj_set_size(icon, 30, 20);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(icon, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(icon, LV_ALIGN_RIGHT_MID, -8, 0);
+
+    lv_obj_t *body = lv_obj_create(icon);
+    lv_obj_set_size(body, 30, 14);
+    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_color(body, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(body, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(body, 3, LV_PART_MAIN);
+    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
+
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *wheel = lv_obj_create(icon);
+        lv_obj_set_size(wheel, 8, 8);
+        lv_obj_set_style_radius(wheel, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(wheel, lv_color_hex(0x000000), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(wheel, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_border_width(wheel, 0, LV_PART_MAIN);
+        lv_obj_clear_flag(wheel, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_align(wheel, i == 0 ? LV_ALIGN_BOTTOM_LEFT : LV_ALIGN_BOTTOM_RIGHT, i == 0 ? 3 : -3, 0);
+    }
+}
+
+/**
  * @brief Update the LED-style departure board (ZVV street-display look)
  *
  * Shows the soonest departures across all directions from the configured bus
@@ -814,18 +850,18 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             lv_obj_set_width(dest_lbl, LV_PCT(100) - BOARD_LINE_COL_W - 70);
             lv_obj_align(dest_lbl, LV_ALIGN_LEFT_MID, BOARD_LINE_COL_W, 0);
 
-            // Minutes, right column - replaced by an arrival marker at/under 0
-            lv_obj_t *min_lbl = lv_label_create(row);
-            char min_text[16];
+            // Minutes, right column - replaced by a bus icon once at the stop
             if (data->departures[i].minutes_until <= 0) {
-                snprintf(min_text, sizeof(min_text), "\xc2\xbb"); // "»" - vehicle at stop
+                create_board_bus_icon(row);
             } else {
+                lv_obj_t *min_lbl = lv_label_create(row);
+                char min_text[16];
                 snprintf(min_text, sizeof(min_text), "%d'", data->departures[i].minutes_until);
+                lv_label_set_text(min_lbl, min_text);
+                lv_obj_set_style_text_font(min_lbl, &arimo_bold_20, LV_PART_MAIN);
+                lv_obj_set_style_text_color(min_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+                lv_obj_align(min_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
             }
-            lv_label_set_text(min_lbl, min_text);
-            lv_obj_set_style_text_font(min_lbl, &arimo_bold_20, LV_PART_MAIN);
-            lv_obj_set_style_text_color(min_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
-            lv_obj_align(min_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
 
             shown++;
         }
@@ -1527,7 +1563,7 @@ static void create_board_view(lv_obj_t *parent)
     lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(board_list, 0, 0);
-    lv_obj_set_style_pad_row(board_list, 6, 0);
+    lv_obj_set_style_pad_row(board_list, 2, 0);
     lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
