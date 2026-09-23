@@ -764,6 +764,7 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 #define BOARD_ROW_HEIGHT  22   /* matches led_matrix_20's line_height - no extra slack inside the row */
 #define BOARD_ROW_GAP     2    /* must match lv_obj_set_style_pad_row(board_list, ...) below */
 #define BOARD_RIGHT_COL_W 40   /* reserved space on the right for the minutes/icon */
+#define BOARD_LINE_COL_W  40   /* fixed-width line-number column so destinations start at the same x on every row */
 
 /**
  * @brief Small vector vehicle icon (amber rounded box with a windshield
@@ -840,7 +841,7 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
         /* Plain pixel width for the text column - NOT LV_PCT() arithmetic: subtracting a
          * pixel count from an LV_PCT() value corrupts its bit-packed encoding instead of
          * shrinking it, which is what made the text column size unpredictable before. */
-        lv_coord_t text_max_w = row_w - BOARD_RIGHT_COL_W - 16;
+        lv_coord_t text_max_w = row_w - BOARD_LINE_COL_W - BOARD_RIGHT_COL_W - 16;
         if (text_max_w < 40) text_max_w = 40;
 
         int shown = 0;
@@ -856,10 +857,10 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             lv_obj_set_style_radius(row, 0, LV_PART_MAIN);
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-            // Line number + destination run together as one line, like the real board
-            char line_dest[96];
-            snprintf(line_dest, sizeof(line_dest), "%s %s", data->departures[i].line, data->departures[i].destination);
-            create_board_label(row, line_dest, &led_matrix_20, text_max_w, LV_ALIGN_LEFT_MID, 8, 0);
+            // Line number in a fixed-width column, so destinations start at the same x on every row
+            create_board_label(row, data->departures[i].line, &led_matrix_20, 0, LV_ALIGN_LEFT_MID, 8, 0);
+            create_board_label(row, data->departures[i].destination, &led_matrix_20,
+                                text_max_w, LV_ALIGN_LEFT_MID, 8 + BOARD_LINE_COL_W, 0);
 
             // Minutes, right column - replaced by a bus icon once at the stop
             if (data->departures[i].minutes_until <= 0) {
@@ -1587,6 +1588,7 @@ static void create_board_view(lv_obj_t *parent)
  */
 static void bus_board_toggle_btn_cb(lv_event_t *e)
 {
+    ESP_LOGI(TAG, "LED toggle button clicked (was %s)", bus_board_view_active ? "LED" : "List");
     bus_board_view_active = !bus_board_view_active;
 
     if (bus_board_view_active) {
