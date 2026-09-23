@@ -761,7 +761,7 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 /* Amber LED color used across the ZVV-style departure board (approximation of the
  * physical dot-matrix board's warm amber, see PR discussion for reference photos). */
 #define BOARD_LED_AMBER   0xFFB500
-#define BOARD_ROW_HEIGHT  54
+#define BOARD_ROW_HEIGHT  24   /* matches arimo_bold_20's line_height - no extra slack inside the row */
 #define BOARD_LINE_COL_W  62
 
 /**
@@ -1563,7 +1563,7 @@ static void create_board_view(lv_obj_t *parent)
     lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(board_list, 0, 0);
-    lv_obj_set_style_pad_row(board_list, 2, 0);
+    lv_obj_set_style_pad_row(board_list, 4, 0);
     lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
