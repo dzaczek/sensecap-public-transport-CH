@@ -6,6 +6,7 @@
 #include "indicator_btn.h"
 #include "network_manager.h"
 #include "transport_data.h"
+#include "connections_data.h"
 #include "esp_log.h"
 
 static const char *TAG = "model";
@@ -25,7 +26,11 @@ int indicator_model_init(void)
     
     // Initialize transport data module with smart refresh
     transport_data_init();
-    
+
+    // Initialize journey planner (From/To connections search)
+    connections_data_init();
+
+
     ESP_LOGI(TAG, "Model initialization complete");
     return 0;
 }

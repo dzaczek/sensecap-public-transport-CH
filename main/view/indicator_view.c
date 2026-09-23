@@ -5,6 +5,7 @@
 #include "esp_event.h"
 #include "network_manager.h"
 #include "transport_data.h"
+#include "connections_data.h"
 #include "indicator_time.h"  // For time updates
 #include "indicator_display.h"  // For display config
 #include "sbb_clock.h"
@@ -58,6 +59,24 @@ static void create_board_view(lv_obj_t *parent);
 static void bus_board_toggle_btn_cb(lv_event_t *e);
 static void create_train_screen(lv_obj_t *parent);
 static void create_settings_screen(lv_obj_t *parent);
+static void create_connect_screen(lv_obj_t *parent);
+static void create_connect_details_screen(lv_obj_t *parent);
+static void create_station_search_overlay(lv_obj_t *parent);
+static void update_connect_screen(const struct view_data_connections *data);
+static void update_station_search_results(const struct view_data_station_search *data);
+static void open_station_search(bool picking_from);
+static void show_connection_details(const struct connection_view *conn);
+static void connect_from_btn_cb(lv_event_t *e);
+static void connect_to_btn_cb(lv_event_t *e);
+static void connect_swap_btn_cb(lv_event_t *e);
+static void connect_search_btn_cb(lv_event_t *e);
+static void connect_result_item_cb(lv_event_t *e);
+static void connect_details_close_btn_cb(lv_event_t *e);
+static void connect_back_btn_cb(lv_event_t *e);
+static void station_search_ta_event_cb(lv_event_t *e);
+static void station_search_result_item_cb(lv_event_t *e);
+static void station_search_close_btn_cb(lv_event_t *e);
+static void station_search_debounce_cb(lv_timer_t *t);
 static void refresh_btn_cb(lv_event_t *e);
 static void bus_refresh_btn_cb(lv_event_t *e);
 static void bus_back_btn_cb(lv_event_t *e);
@@ -120,6 +139,31 @@ static lv_obj_t *bus_details_view = NULL;
 static lv_obj_t *bus_details_list = NULL;
 static lv_obj_t *bus_details_title = NULL;
 static lv_obj_t *bus_details_close_btn = NULL;
+
+// Connect (journey planner) screen widgets
+static lv_obj_t *connect_screen = NULL;
+static lv_obj_t *connect_selection_cont = NULL;
+static lv_obj_t *connect_loading_cont = NULL;
+static lv_obj_t *connect_results_cont = NULL;
+static lv_obj_t *connect_from_label = NULL;
+static lv_obj_t *connect_to_label = NULL;
+static lv_obj_t *connect_status_label = NULL;
+static lv_obj_t *connect_results_list = NULL;
+
+// Station search overlay (shared by the From and To pickers)
+static lv_obj_t *station_search_cont = NULL;
+static lv_obj_t *station_search_ta = NULL;
+static lv_obj_t *station_search_keyboard = NULL;
+static lv_obj_t *station_search_list = NULL;
+static lv_obj_t *station_search_status = NULL;
+static bool station_search_picking_from = true;
+static lv_timer_t *station_search_debounce_timer = NULL;
+
+// Connection details overlay - filled from the already-fetched connection (no extra request needed)
+static lv_obj_t *connect_details_screen = NULL;
+static lv_obj_t *connect_details_list = NULL;
+static lv_obj_t *connect_details_title = NULL;
+static struct view_data_connections g_connections_cache; // last VIEW_EVENT_CONNECTIONS_UPDATE payload
 
 /* – ID from transport.opendata.ch */
 static const station_t predefined_stations[] = {
@@ -294,14 +338,15 @@ static void tabview_event_cb(lv_event_t *e)
     uint16_t id = lv_tabview_get_tab_act(tv);
     ESP_LOGI(TAG, "Tab changed to %d", id);
 
-    // Tabs: 0=Clock, 1=Bus, 2=Train, 3=Settings.
+    // Tabs: 0=Clock, 1=Bus, 2=Train, 3=Connect, 4=Settings.
     // transport_data's refresh scheduler only knows 0=bus-active, 1=train-active,
-    // else=skip, so map the tabs that consume bus data (Clock/Bus) to 0.
+    // else=skip, so map the tabs that consume bus data (Clock/Bus) to 0. Connect
+    // is manual/on-demand (Search button), not part of the periodic refresh at all.
     int logical_screen;
     if (id == 2) {
         logical_screen = 1; // Train
-    } else if (id == 3) {
-        logical_screen = 2; // Settings - no live data needed
+    } else if (id == 3 || id == 4) {
+        logical_screen = 2; // Connect, Settings - no periodic refresh needed
     } else {
         logical_screen = 0; // Clock, Bus - both show bus countdown data
     }
@@ -1640,6 +1685,503 @@ static void bus_board_toggle_btn_cb(lv_event_t *e)
         lv_obj_set_style_bg_opa(bus_view_cont, bus_board_view_active ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
         lv_obj_set_style_bg_color(bus_view_cont, lv_color_hex(0x000000), LV_PART_MAIN);
     }
+}
+
+// Cached copies of async results so list-item taps can look up full detail without another fetch
+static struct view_data_station_search g_station_search_cache;
+static char g_view_from_name[64] = "";
+static char g_view_from_id[16] = "";
+static char g_view_to_name[64] = "";
+static char g_view_to_id[16] = "";
+
+static void update_connect_from_to_labels(void)
+{
+    if (connect_from_label) {
+        lv_label_set_text_fmt(connect_from_label, "From: %s", g_view_from_name[0] ? g_view_from_name : "(tap to select)");
+    }
+    if (connect_to_label) {
+        lv_label_set_text_fmt(connect_to_label, "To: %s", g_view_to_name[0] ? g_view_to_name : "(tap to select)");
+    }
+}
+
+/**
+ * @brief Open the shared station search overlay for either the From or To field
+ */
+static void open_station_search(bool picking_from)
+{
+    station_search_picking_from = picking_from;
+    if (station_search_ta) lv_textarea_set_text(station_search_ta, "");
+    if (station_search_list) lv_obj_clean(station_search_list);
+    if (station_search_status) lv_label_set_text(station_search_status, "Type a station name...");
+    if (station_search_cont) lv_obj_clear_flag(station_search_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void connect_from_btn_cb(lv_event_t *e)
+{
+    open_station_search(true);
+}
+
+static void connect_to_btn_cb(lv_event_t *e)
+{
+    open_station_search(false);
+}
+
+static void connect_swap_btn_cb(lv_event_t *e)
+{
+    char tmp_name[64], tmp_id[16];
+    strncpy(tmp_name, g_view_from_name, sizeof(tmp_name) - 1);
+    strncpy(tmp_id, g_view_from_id, sizeof(tmp_id) - 1);
+
+    strncpy(g_view_from_name, g_view_to_name, sizeof(g_view_from_name) - 1);
+    strncpy(g_view_from_id, g_view_to_id, sizeof(g_view_from_id) - 1);
+    strncpy(g_view_to_name, tmp_name, sizeof(g_view_to_name) - 1);
+    strncpy(g_view_to_id, tmp_id, sizeof(g_view_to_id) - 1);
+
+    if (g_view_from_id[0]) connections_data_set_from(g_view_from_name, g_view_from_id);
+    if (g_view_to_id[0]) connections_data_set_to(g_view_to_name, g_view_to_id);
+
+    update_connect_from_to_labels();
+}
+
+static void connect_search_btn_cb(lv_event_t *e)
+{
+    if (!connections_data_ready()) {
+        if (connect_status_label) lv_label_set_text(connect_status_label, "Select both From and To stations first");
+        return;
+    }
+    if (connect_status_label) lv_label_set_text(connect_status_label, "");
+    lv_obj_add_flag(connect_selection_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(connect_loading_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(connect_results_cont, LV_OBJ_FLAG_HIDDEN);
+    connections_data_fetch();
+}
+
+static void connect_result_item_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= g_connections_cache.count) return;
+    show_connection_details(&g_connections_cache.connections[idx]);
+}
+
+static void connect_details_close_btn_cb(lv_event_t *e)
+{
+    if (connect_details_screen) lv_obj_add_flag(connect_details_screen, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Back to the From/To selection screen from the results list
+ */
+static void connect_back_btn_cb(lv_event_t *e)
+{
+    lv_obj_clear_flag(connect_selection_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(connect_loading_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(connect_results_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void station_search_debounce_cb(lv_timer_t *t)
+{
+    station_search_debounce_timer = NULL;
+    if (!station_search_ta) return;
+    const char *text = lv_textarea_get_text(station_search_ta);
+    if (strlen(text) < 2) {
+        if (station_search_list) lv_obj_clean(station_search_list);
+        if (station_search_status) lv_label_set_text(station_search_status, "Type at least 2 letters...");
+        return;
+    }
+    if (station_search_status) lv_label_set_text(station_search_status, "Searching...");
+    connections_data_search_stations(text);
+}
+
+static void station_search_ta_event_cb(lv_event_t *e)
+{
+    if (station_search_debounce_timer) {
+        lv_timer_del(station_search_debounce_timer);
+        station_search_debounce_timer = NULL;
+    }
+    station_search_debounce_timer = lv_timer_create(station_search_debounce_cb, 400, NULL);
+    lv_timer_set_repeat_count(station_search_debounce_timer, 1);
+}
+
+static void station_search_result_item_cb(lv_event_t *e)
+{
+    int idx = (int)(intptr_t)lv_event_get_user_data(e);
+    if (idx < 0 || idx >= g_station_search_cache.count) return;
+
+    struct station_search_result *r = &g_station_search_cache.results[idx];
+    if (station_search_picking_from) {
+        strncpy(g_view_from_name, r->name, sizeof(g_view_from_name) - 1);
+        strncpy(g_view_from_id, r->id, sizeof(g_view_from_id) - 1);
+        connections_data_set_from(r->name, r->id);
+    } else {
+        strncpy(g_view_to_name, r->name, sizeof(g_view_to_name) - 1);
+        strncpy(g_view_to_id, r->id, sizeof(g_view_to_id) - 1);
+        connections_data_set_to(r->name, r->id);
+    }
+    update_connect_from_to_labels();
+
+    if (station_search_cont) lv_obj_add_flag(station_search_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void station_search_close_btn_cb(lv_event_t *e)
+{
+    if (station_search_cont) lv_obj_add_flag(station_search_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Render one already-fetched connection's legs into the details overlay
+ */
+static void show_connection_details(const struct connection_view *conn)
+{
+    if (!conn || !connect_details_screen || !connect_details_list) return;
+
+    lv_label_set_text_fmt(connect_details_title, "%s - %s  (%d transfer%s)",
+                           conn->departure_time, conn->arrival_time,
+                           conn->transfers, conn->transfers == 1 ? "" : "s");
+
+    lv_obj_clean(connect_details_list);
+    for (int i = 0; i < conn->section_count; i++) {
+        const struct connection_section *s = &conn->sections[i];
+
+        lv_obj_t *item = lv_obj_create(connect_details_list);
+        lv_obj_set_size(item, LV_PCT(100), 60);
+        lv_obj_set_style_bg_color(item, lv_color_hex(0x1A1A1A), 0);
+        lv_obj_set_style_border_width(item, 0, 0);
+        lv_obj_set_style_pad_all(item, 5, 0);
+        lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *lbl_line = lv_label_create(item);
+        lv_label_set_text(lbl_line, s->line);
+        lv_obj_set_style_text_color(lbl_line, lv_color_hex(0xFFD700), 0);
+        lv_obj_set_style_text_font(lbl_line, &arimo_16, 0);
+        lv_obj_align(lbl_line, LV_ALIGN_TOP_LEFT, 0, 0);
+
+        lv_obj_t *lbl_route = lv_label_create(item);
+        lv_label_set_text_fmt(lbl_route, "%s %s -> %s %s", s->departure_time, s->from_name, s->arrival_time, s->to_name);
+        lv_obj_set_style_text_color(lbl_route, lv_color_white(), 0);
+        lv_obj_set_style_text_font(lbl_route, &arimo_14, 0);
+        lv_obj_align(lbl_route, LV_ALIGN_TOP_LEFT, 0, 22);
+
+        if (s->platform[0]) {
+            lv_obj_t *lbl_pf = lv_label_create(item);
+            lv_label_set_text_fmt(lbl_pf, "Pl. %s", s->platform);
+            lv_obj_set_style_text_color(lbl_pf, lv_color_hex(0x808080), 0);
+            lv_obj_set_style_text_font(lbl_pf, &arimo_14, 0);
+            lv_obj_align(lbl_pf, LV_ALIGN_TOP_RIGHT, 0, 0);
+        }
+    }
+
+    lv_obj_clear_flag(connect_details_screen, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Update the results list from a fresh VIEW_EVENT_CONNECTIONS_UPDATE
+ */
+static void update_connect_screen(const struct view_data_connections *data)
+{
+    if (!data) return;
+
+    lv_port_sem_take();
+
+    g_connections_cache = *data; // cache for detail lookups on tap
+
+    lv_obj_add_flag(connect_loading_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(connect_results_cont, LV_OBJ_FLAG_HIDDEN);
+
+    if (connect_results_list) {
+        lv_obj_clean(connect_results_list);
+
+        if (data->api_error) {
+            lv_obj_t *lbl = lv_label_create(connect_results_list);
+            lv_label_set_text(lbl, data->error_msg[0] ? data->error_msg : "Search failed");
+            lv_obj_set_style_text_color(lbl, lv_color_hex(0xFF0000), 0);
+            lv_obj_set_style_text_font(lbl, &arimo_16, 0);
+        } else if (data->count == 0) {
+            lv_obj_t *lbl = lv_label_create(connect_results_list);
+            lv_label_set_text(lbl, "No connections found");
+            lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+            lv_obj_set_style_text_font(lbl, &arimo_16, 0);
+        } else {
+            for (int i = 0; i < data->count; i++) {
+                const struct connection_view *c = &data->connections[i];
+                if (!c->valid) continue;
+
+                lv_obj_t *item = lv_btn_create(connect_results_list);
+                lv_obj_set_size(item, LV_PCT(100), 55);
+                lv_obj_set_style_bg_color(item, lv_color_hex(0x1A1A1A), 0);
+                lv_obj_set_style_border_width(item, 0, 0);
+                lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+                lv_obj_add_event_cb(item, connect_result_item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+                lv_obj_t *lbl_time = lv_label_create(item);
+                lv_label_set_text_fmt(lbl_time, "%s -> %s", c->departure_time, c->arrival_time);
+                lv_obj_set_style_text_color(lbl_time, lv_color_white(), 0);
+                lv_obj_set_style_text_font(lbl_time, &arimo_20, 0);
+                lv_obj_align(lbl_time, LV_ALIGN_TOP_LEFT, 5, 2);
+
+                lv_obj_t *lbl_meta = lv_label_create(item);
+                lv_label_set_text_fmt(lbl_meta, "%s, %d transfer%s", c->duration, c->transfers, c->transfers == 1 ? "" : "s");
+                lv_obj_set_style_text_color(lbl_meta, lv_color_hex(0xAAAAAA), 0);
+                lv_obj_set_style_text_font(lbl_meta, &arimo_14, 0);
+                lv_obj_align(lbl_meta, LV_ALIGN_BOTTOM_LEFT, 5, -2);
+
+                if (c->departure_delay >= 1) {
+                    lv_obj_t *lbl_delay = lv_label_create(item);
+                    lv_label_set_text_fmt(lbl_delay, "+%d'", c->departure_delay);
+                    lv_obj_set_style_text_color(lbl_delay, lv_color_hex(0xFF0000), 0);
+                    lv_obj_set_style_text_font(lbl_delay, &arimo_16, 0);
+                    lv_obj_align(lbl_delay, LV_ALIGN_RIGHT_MID, -5, 0);
+                }
+            }
+        }
+    }
+
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Populate the station search overlay's result list
+ */
+static void update_station_search_results(const struct view_data_station_search *data)
+{
+    if (!data || !station_search_list) return;
+
+    lv_port_sem_take();
+
+    g_station_search_cache = *data;
+    lv_obj_clean(station_search_list);
+
+    if (data->api_error) {
+        if (station_search_status) lv_label_set_text(station_search_status, "Search failed");
+    } else if (data->count == 0) {
+        if (station_search_status) lv_label_set_text(station_search_status, "No stations found");
+    } else {
+        if (station_search_status) lv_label_set_text(station_search_status, "");
+        for (int i = 0; i < data->count; i++) {
+            lv_obj_t *btn = lv_btn_create(station_search_list);
+            lv_obj_set_size(btn, LV_PCT(100), 45);
+            lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+            lv_obj_add_event_cb(btn, station_search_result_item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+            lv_obj_t *lbl = lv_label_create(btn);
+            lv_label_set_text(lbl, data->results[i].name);
+            lv_obj_set_style_text_font(lbl, &arimo_16, 0);
+            lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 5, 0);
+        }
+    }
+
+    lv_port_sem_give();
+}
+
+/**
+ * @brief Create the shared From/To station search overlay (text search + on-screen keyboard)
+ */
+static void create_station_search_overlay(lv_obj_t *parent)
+{
+    station_search_cont = lv_obj_create(parent);
+    lv_obj_set_size(station_search_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(station_search_cont, lv_color_hex(0x101010), 0);
+    lv_obj_set_style_bg_opa(station_search_cont, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(station_search_cont, 5, 0);
+    lv_obj_add_flag(station_search_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(station_search_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *close_btn = lv_btn_create(station_search_cont);
+    lv_obj_set_size(close_btn, 45, 45);
+    lv_obj_align(close_btn, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0xFF0000), 0);
+    lv_obj_add_event_cb(close_btn, station_search_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *close_lbl = lv_label_create(close_btn);
+    lv_label_set_text(close_lbl, LV_SYMBOL_CLOSE);
+    lv_obj_center(close_lbl);
+
+    station_search_ta = lv_textarea_create(station_search_cont);
+    lv_textarea_set_one_line(station_search_ta, true);
+    lv_textarea_set_placeholder_text(station_search_ta, "Station name...");
+    lv_obj_set_size(station_search_ta, LV_PCT(78), 45);
+    lv_obj_align(station_search_ta, LV_ALIGN_TOP_LEFT, 0, 0);
+    lv_obj_set_style_text_font(station_search_ta, &arimo_16, 0);
+    lv_obj_add_event_cb(station_search_ta, station_search_ta_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    station_search_status = lv_label_create(station_search_cont);
+    lv_label_set_text(station_search_status, "Type a station name...");
+    lv_obj_set_style_text_font(station_search_status, &arimo_14, 0);
+    lv_obj_set_style_text_color(station_search_status, lv_color_hex(0xAAAAAA), 0);
+    lv_obj_align(station_search_status, LV_ALIGN_TOP_LEFT, 0, 48);
+
+    station_search_list = lv_obj_create(station_search_cont);
+    lv_obj_set_size(station_search_list, LV_PCT(100), 165);
+    lv_obj_align(station_search_list, LV_ALIGN_TOP_MID, 0, 70);
+    lv_obj_set_style_bg_opa(station_search_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(station_search_list, 0, 0);
+    lv_obj_set_flex_flow(station_search_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(station_search_list, 4, 0);
+
+    station_search_keyboard = lv_keyboard_create(station_search_cont);
+    lv_keyboard_set_textarea(station_search_keyboard, station_search_ta);
+    lv_obj_set_size(station_search_keyboard, LV_PCT(100), LV_PCT(43));
+    lv_obj_align(station_search_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
+/**
+ * @brief Create the connection details overlay (one leg per row)
+ */
+static void create_connect_details_screen(lv_obj_t *parent)
+{
+    connect_details_screen = lv_obj_create(parent);
+    lv_obj_set_size(connect_details_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_color(connect_details_screen, lv_color_hex(0x101010), 0);
+    lv_obj_set_style_bg_opa(connect_details_screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(connect_details_screen, 2, 0);
+    lv_obj_set_style_border_color(connect_details_screen, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_pad_all(connect_details_screen, 0, 0);
+    lv_obj_add_flag(connect_details_screen, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *header = lv_obj_create(connect_details_screen);
+    lv_obj_set_size(header, LV_PCT(100), 60);
+    lv_obj_set_style_bg_color(header, lv_color_hex(0x303030), 0);
+    lv_obj_set_style_border_width(header, 0, 0);
+    lv_obj_align(header, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t *close_btn = lv_btn_create(header);
+    lv_obj_set_size(close_btn, 50, 50);
+    lv_obj_align(close_btn, LV_ALIGN_RIGHT_MID, -5, 0);
+    lv_obj_set_style_bg_color(close_btn, lv_color_hex(0xFF0000), 0);
+    lv_obj_add_event_cb(close_btn, connect_details_close_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *lbl_x = lv_label_create(close_btn);
+    lv_label_set_text(lbl_x, LV_SYMBOL_CLOSE);
+    lv_obj_center(lbl_x);
+
+    connect_details_title = lv_label_create(header);
+    lv_label_set_text(connect_details_title, "Details");
+    lv_obj_set_style_text_font(connect_details_title, &arimo_16, 0);
+    lv_obj_set_width(connect_details_title, LV_PCT(75));
+    lv_obj_align(connect_details_title, LV_ALIGN_LEFT_MID, 10, 0);
+
+    connect_details_list = lv_obj_create(connect_details_screen);
+    lv_obj_set_size(connect_details_list, LV_PCT(100), LV_PCT(85));
+    lv_obj_set_y(connect_details_list, 60);
+    lv_obj_set_style_bg_opa(connect_details_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_details_list, 0, 0);
+    lv_obj_set_flex_flow(connect_details_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(connect_details_list, 2, 0);
+}
+
+/**
+ * @brief Create the journey planner (Connect) screen: From/To selection -> results -> details
+ */
+static void create_connect_screen(lv_obj_t *parent)
+{
+    connect_screen = lv_obj_create(parent);
+    lv_obj_set_size(connect_screen, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_pad_all(connect_screen, 0, 0);
+    lv_obj_set_style_border_width(connect_screen, 0, 0);
+    lv_obj_set_style_bg_color(connect_screen, lv_color_hex(0x1A1A1A), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(connect_screen, LV_OBJ_FLAG_SCROLLABLE);
+
+    // --- Selection state ---
+    connect_selection_cont = lv_obj_create(connect_screen);
+    lv_obj_set_size(connect_selection_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(connect_selection_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_selection_cont, 0, 0);
+    lv_obj_clear_flag(connect_selection_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *title = lv_label_create(connect_selection_cont);
+    lv_label_set_text(title, "Journey Planner");
+    lv_obj_set_style_text_font(title, &arimo_20, 0);
+    lv_obj_set_style_text_color(title, lv_color_white(), 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
+
+    lv_obj_t *from_btn = lv_btn_create(connect_selection_cont);
+    lv_obj_set_size(from_btn, LV_PCT(85), 50);
+    lv_obj_align(from_btn, LV_ALIGN_TOP_MID, 0, 55);
+    lv_obj_set_style_bg_color(from_btn, lv_color_hex(0x444444), 0);
+    lv_obj_add_event_cb(from_btn, connect_from_btn_cb, LV_EVENT_CLICKED, NULL);
+    connect_from_label = lv_label_create(from_btn);
+    lv_label_set_text(connect_from_label, "From: (tap to select)");
+    lv_obj_set_style_text_font(connect_from_label, &arimo_16, 0);
+    lv_obj_center(connect_from_label);
+
+    lv_obj_t *swap_btn = lv_btn_create(connect_selection_cont);
+    lv_obj_set_size(swap_btn, 45, 45);
+    lv_obj_align(swap_btn, LV_ALIGN_TOP_MID, 0, 112);
+    lv_obj_set_style_bg_color(swap_btn, lv_color_hex(0x555555), 0);
+    lv_obj_add_event_cb(swap_btn, connect_swap_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *swap_lbl = lv_label_create(swap_btn);
+    lv_label_set_text(swap_lbl, LV_SYMBOL_SHUFFLE);
+    lv_obj_center(swap_lbl);
+
+    lv_obj_t *to_btn = lv_btn_create(connect_selection_cont);
+    lv_obj_set_size(to_btn, LV_PCT(85), 50);
+    lv_obj_align(to_btn, LV_ALIGN_TOP_MID, 0, 165);
+    lv_obj_set_style_bg_color(to_btn, lv_color_hex(0x444444), 0);
+    lv_obj_add_event_cb(to_btn, connect_to_btn_cb, LV_EVENT_CLICKED, NULL);
+    connect_to_label = lv_label_create(to_btn);
+    lv_label_set_text(connect_to_label, "To: (tap to select)");
+    lv_obj_set_style_text_font(connect_to_label, &arimo_16, 0);
+    lv_obj_center(connect_to_label);
+
+    lv_obj_t *search_btn = lv_btn_create(connect_selection_cont);
+    lv_obj_set_size(search_btn, LV_PCT(85), 50);
+    lv_obj_align(search_btn, LV_ALIGN_TOP_MID, 0, 235);
+    lv_obj_set_style_bg_color(search_btn, lv_color_hex(0x008000), 0);
+    lv_obj_add_event_cb(search_btn, connect_search_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *search_lbl = lv_label_create(search_btn);
+    lv_label_set_text(search_lbl, "Search connections");
+    lv_obj_set_style_text_font(search_lbl, &arimo_16, 0);
+    lv_obj_center(search_lbl);
+
+    connect_status_label = lv_label_create(connect_selection_cont);
+    lv_label_set_text(connect_status_label, "");
+    lv_obj_set_style_text_font(connect_status_label, &arimo_14, 0);
+    lv_obj_set_style_text_color(connect_status_label, lv_color_hex(0xFF0000), 0);
+    lv_obj_set_width(connect_status_label, LV_PCT(85));
+    lv_label_set_long_mode(connect_status_label, LV_LABEL_LONG_WRAP);
+    lv_obj_align(connect_status_label, LV_ALIGN_TOP_MID, 0, 295);
+
+    // --- Loading state ---
+    connect_loading_cont = lv_obj_create(connect_screen);
+    lv_obj_set_size(connect_loading_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(connect_loading_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_loading_cont, 0, 0);
+    lv_obj_add_flag(connect_loading_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *spinner = lv_spinner_create(connect_loading_cont, 1000, 60);
+    lv_obj_set_size(spinner, 80, 80);
+    lv_obj_align(spinner, LV_ALIGN_CENTER, 0, -30);
+    lv_obj_t *loading_lbl = lv_label_create(connect_loading_cont);
+    lv_label_set_text(loading_lbl, "Searching connections...");
+    lv_obj_set_style_text_font(loading_lbl, &arimo_16, 0);
+    lv_obj_set_style_text_color(loading_lbl, lv_color_white(), 0);
+    lv_obj_align(loading_lbl, LV_ALIGN_CENTER, 0, 30);
+
+    // --- Results state ---
+    connect_results_cont = lv_obj_create(connect_screen);
+    lv_obj_set_size(connect_results_cont, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_style_bg_opa(connect_results_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_results_cont, 0, 0);
+    lv_obj_add_flag(connect_results_cont, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(connect_results_cont, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t *back_btn = lv_btn_create(connect_results_cont);
+    lv_obj_set_size(back_btn, 45, 45);
+    lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, 5, 5);
+    lv_obj_set_style_bg_color(back_btn, lv_color_hex(0x444444), 0);
+    lv_obj_add_event_cb(back_btn, connect_back_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *back_lbl = lv_label_create(back_btn);
+    lv_label_set_text(back_lbl, "x");
+    lv_obj_set_style_text_font(back_lbl, &arimo_20, 0);
+    lv_obj_center(back_lbl);
+
+    connect_results_list = lv_obj_create(connect_results_cont);
+    lv_obj_set_size(connect_results_list, LV_PCT(100), LV_PCT(87));
+    lv_obj_align(connect_results_list, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(connect_results_list, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_results_list, 0, 0);
+    lv_obj_set_flex_flow(connect_results_list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(connect_results_list, 4, 0);
+
+    // Overlays (children of connect_screen so they cover the whole tab)
+    create_station_search_overlay(connect_screen);
+    create_connect_details_screen(connect_screen);
 }
 
 /**
@@ -3235,6 +3777,16 @@ static void view_event_handler(void* handler_args, esp_event_base_t base,
             update_sysinfo_screen(info);
             break;
         }
+        case VIEW_EVENT_CONNECTIONS_UPDATE: {
+            const struct view_data_connections *data = (const struct view_data_connections *)event_data;
+            update_connect_screen(data);
+            break;
+        }
+        case VIEW_EVENT_STATION_SEARCH_RESULTS: {
+            const struct view_data_station_search *data = (const struct view_data_station_search *)event_data;
+            update_station_search_results(data);
+            break;
+        }
         default:
             break;
     }
@@ -3265,10 +3817,11 @@ int indicator_view_init(void)
         lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
     }
     
-    // Create tabs – Clock first, then Bus, Train, Settings
+    // Create tabs – Clock first, then Bus, Train, Connect, Settings
     lv_obj_t *clock_tab = lv_tabview_add_tab(tabview, "Clock");
     lv_obj_t *bus_tab = lv_tabview_add_tab(tabview, "Bus");
     lv_obj_t *train_tab = lv_tabview_add_tab(tabview, "Train");
+    lv_obj_t *connect_tab = lv_tabview_add_tab(tabview, "Connect");
     lv_obj_t *settings_tab = lv_tabview_add_tab(tabview, "Settings");
 
     // Remove padding from tabs and ensure no focus ring
@@ -3280,7 +3833,10 @@ int indicator_view_init(void)
 
     lv_obj_set_style_pad_all(train_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(train_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
-    
+
+    lv_obj_set_style_pad_all(connect_tab, 0, LV_PART_MAIN);
+    lv_obj_set_style_outline_width(connect_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
+
     lv_obj_set_style_pad_all(settings_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(settings_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
     
@@ -3308,6 +3864,7 @@ int indicator_view_init(void)
     create_train_screen(train_tab);
     // Create details screen as child of train tab, so it overlays the train screen
     create_train_details_screen(train_tab);
+    create_connect_screen(connect_tab);
     create_settings_screen(settings_tab);
     /* Do not call update_station_buttons_availability() here – model (time, network) is not inited yet.
      * It will run on first VIEW_EVENT_SETTINGS_UPDATE or VIEW_EVENT_WIFI_ST after model init. */
@@ -3360,6 +3917,12 @@ int indicator_view_init(void)
                                             view_event_handler, NULL, NULL);
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
                                             VIEW_EVENT_SYSTEM_INFO_UPDATE,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_CONNECTIONS_UPDATE,
+                                            view_event_handler, NULL, NULL);
+    esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,
+                                            VIEW_EVENT_STATION_SEARCH_RESULTS,
                                             view_event_handler, NULL, NULL);
     // Register time event handler for footer updates
     esp_event_handler_instance_register_with(view_event_handle, VIEW_EVENT_BASE,

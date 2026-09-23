@@ -424,7 +424,7 @@ static esp_err_t parse_connections_json(const char *json_str)
 
     cJSON_Delete(root);
     ESP_LOGI(TAG, "Parsed %d connections", idx);
-    return idx > 0 ? ESP_OK : ESP_FAIL;
+    return ESP_OK; // idx==0 is a legitimate "no connections found" result, not a parse failure
 }
 
 /**
