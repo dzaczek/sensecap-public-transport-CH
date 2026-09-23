@@ -762,42 +762,33 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
  * physical dot-matrix board's warm amber, see PR discussion for reference photos). */
 #define BOARD_LED_AMBER   0xFFB500
 #define BOARD_ROW_HEIGHT  22   /* matches led_matrix_20's line_height - no extra slack inside the row */
-#define BOARD_LINE_COL_W  62
+#define BOARD_RIGHT_COL_W 40   /* reserved space on the right for the minutes/icon */
 
 /**
- * @brief Small vector bus icon (amber body, black wheel cutouts) shown instead
- * of the minutes countdown once a departure reaches the stop - no bitmap/font
- * asset needed, just a couple of plain LVGL shapes.
+ * @brief Small vector vehicle icon (amber rounded box with a windshield
+ * divider line) shown instead of the minutes countdown once a departure
+ * reaches the stop - no bitmap/font asset needed, just plain LVGL shapes.
  */
 static void create_board_bus_icon(lv_obj_t *parent)
 {
     lv_obj_t *icon = lv_obj_create(parent);
-    lv_obj_set_size(icon, 30, 20);
-    lv_obj_set_style_bg_opa(icon, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_size(icon, 22, 16);
+    lv_obj_set_style_bg_color(icon, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(icon, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(icon, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(icon, 3, LV_PART_MAIN);
     lv_obj_set_style_pad_all(icon, 0, LV_PART_MAIN);
     lv_obj_clear_flag(icon, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(icon, LV_ALIGN_RIGHT_MID, -8, 0);
 
-    lv_obj_t *body = lv_obj_create(icon);
-    lv_obj_set_size(body, 30, 14);
-    lv_obj_align(body, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(body, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(body, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(body, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(body, 3, LV_PART_MAIN);
-    lv_obj_clear_flag(body, LV_OBJ_FLAG_SCROLLABLE);
-
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *wheel = lv_obj_create(icon);
-        lv_obj_set_size(wheel, 8, 8);
-        lv_obj_set_style_radius(wheel, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-        lv_obj_set_style_bg_color(wheel, lv_color_hex(0x000000), LV_PART_MAIN);
-        lv_obj_set_style_bg_opa(wheel, LV_OPA_COVER, LV_PART_MAIN);
-        lv_obj_set_style_border_width(wheel, 0, LV_PART_MAIN);
-        lv_obj_clear_flag(wheel, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_align(wheel, i == 0 ? LV_ALIGN_BOTTOM_LEFT : LV_ALIGN_BOTTOM_RIGHT, i == 0 ? 3 : -3, 0);
-    }
+    /* Windshield divider - a thin black bar punched into the top third of the icon */
+    lv_obj_t *divider = lv_obj_create(icon);
+    lv_obj_set_size(divider, 16, 2);
+    lv_obj_set_style_bg_color(divider, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(divider, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(divider, 0, LV_PART_MAIN);
+    lv_obj_clear_flag(divider, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(divider, LV_ALIGN_TOP_MID, 0, 4);
 }
 
 /**
@@ -855,12 +846,11 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             lv_obj_set_style_radius(row, 0, LV_PART_MAIN);
             lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
-            // Line number, left column
-            create_board_label(row, data->departures[i].line, &led_matrix_20, 0, LV_ALIGN_LEFT_MID, 8, 0);
-
-            // Destination, fixed-position middle column so it lines up row to row
-            create_board_label(row, data->departures[i].destination, &led_matrix_16,
-                                LV_PCT(100) - BOARD_LINE_COL_W - 70, LV_ALIGN_LEFT_MID, BOARD_LINE_COL_W, 0);
+            // Line number + destination run together as one line, like the real board
+            char line_dest[96];
+            snprintf(line_dest, sizeof(line_dest), "%s %s", data->departures[i].line, data->departures[i].destination);
+            create_board_label(row, line_dest, &led_matrix_20,
+                                LV_PCT(100) - BOARD_RIGHT_COL_W - 8, LV_ALIGN_LEFT_MID, 8, 0);
 
             // Minutes, right column - replaced by a bus icon once at the stop
             if (data->departures[i].minutes_until <= 0) {
