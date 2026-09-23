@@ -16,8 +16,8 @@ LV_FONT_DECLARE(arimo_14);
 LV_FONT_DECLARE(arimo_16);
 LV_FONT_DECLARE(arimo_20);
 LV_FONT_DECLARE(arimo_24);
-LV_FONT_DECLARE(arimo_bold_16);
-LV_FONT_DECLARE(arimo_bold_20);
+LV_FONT_DECLARE(led_matrix_16);
+LV_FONT_DECLARE(led_matrix_20);
 
 
 static const char *TAG = "view";
@@ -761,7 +761,7 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
 /* Amber LED color used across the ZVV-style departure board (approximation of the
  * physical dot-matrix board's warm amber, see PR discussion for reference photos). */
 #define BOARD_LED_AMBER   0xFFB500
-#define BOARD_ROW_HEIGHT  24   /* matches arimo_bold_20's line_height - no extra slack inside the row */
+#define BOARD_ROW_HEIGHT  22   /* matches led_matrix_20's line_height - no extra slack inside the row */
 #define BOARD_LINE_COL_W  62
 
 /**
@@ -837,14 +837,14 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             // Line number, left column
             lv_obj_t *line_lbl = lv_label_create(row);
             lv_label_set_text(line_lbl, data->departures[i].line);
-            lv_obj_set_style_text_font(line_lbl, &arimo_bold_20, LV_PART_MAIN);
+            lv_obj_set_style_text_font(line_lbl, &led_matrix_20, LV_PART_MAIN);
             lv_obj_set_style_text_color(line_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
             lv_obj_align(line_lbl, LV_ALIGN_LEFT_MID, 8, 0);
 
             // Destination, fixed-position middle column so it lines up row to row
             lv_obj_t *dest_lbl = lv_label_create(row);
             lv_label_set_text(dest_lbl, data->departures[i].destination);
-            lv_obj_set_style_text_font(dest_lbl, &arimo_bold_16, LV_PART_MAIN);
+            lv_obj_set_style_text_font(dest_lbl, &led_matrix_16, LV_PART_MAIN);
             lv_obj_set_style_text_color(dest_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
             lv_label_set_long_mode(dest_lbl, LV_LABEL_LONG_DOT);
             lv_obj_set_width(dest_lbl, LV_PCT(100) - BOARD_LINE_COL_W - 70);
@@ -858,7 +858,7 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
                 char min_text[16];
                 snprintf(min_text, sizeof(min_text), "%d'", data->departures[i].minutes_until);
                 lv_label_set_text(min_lbl, min_text);
-                lv_obj_set_style_text_font(min_lbl, &arimo_bold_20, LV_PART_MAIN);
+                lv_obj_set_style_text_font(min_lbl, &led_matrix_20, LV_PART_MAIN);
                 lv_obj_set_style_text_color(min_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
                 lv_obj_align(min_lbl, LV_ALIGN_RIGHT_MID, -8, 0);
             }
@@ -869,7 +869,7 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
         if (shown == 0) {
             lv_obj_t *empty_lbl = lv_label_create(board_list);
             lv_label_set_text(empty_lbl, data->api_error ? data->error_msg : "No departures");
-            lv_obj_set_style_text_font(empty_lbl, &arimo_bold_16, LV_PART_MAIN);
+            lv_obj_set_style_text_font(empty_lbl, &led_matrix_16, LV_PART_MAIN);
             lv_obj_set_style_text_color(empty_lbl, lv_color_hex(BOARD_LED_AMBER), LV_PART_MAIN);
         }
     }
@@ -1563,7 +1563,7 @@ static void create_board_view(lv_obj_t *parent)
     lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(board_list, 0, 0);
-    lv_obj_set_style_pad_row(board_list, 4, 0);
+    lv_obj_set_style_pad_row(board_list, 2, 0);
     lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
