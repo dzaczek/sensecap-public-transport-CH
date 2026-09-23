@@ -43,10 +43,10 @@ static lv_obj_t *bus_selection_cont = NULL;
 static lv_obj_t *bus_view_cont = NULL;
 static lv_obj_t *bus_loading_cont = NULL;
 
-// LED-style board screen widgets (ZVV-style departure board)
-static lv_obj_t *board_screen = NULL;
-static lv_obj_t *board_stop_label = NULL;
+// LED-style departure board (ZVV-style), toggled within the Bus screen
 static lv_obj_t *board_list = NULL;
+static lv_obj_t *bus_board_toggle_btn = NULL;
+static bool bus_board_view_active = false;
 
 // Forward declarations
 static void update_bus_screen(const struct view_data_bus_countdown *data);
@@ -54,7 +54,8 @@ static void update_board_screen(const struct view_data_bus_countdown *data);
 static void update_train_screen(const struct view_data_train_station *data);
 static void update_settings_screen(const struct view_data_settings *data);
 static void create_bus_screen(lv_obj_t *parent);
-static void create_board_screen(lv_obj_t *parent);
+static void create_board_view(lv_obj_t *parent);
+static void bus_board_toggle_btn_cb(lv_event_t *e);
 static void create_train_screen(lv_obj_t *parent);
 static void create_settings_screen(lv_obj_t *parent);
 static void refresh_btn_cb(lv_event_t *e);
@@ -293,16 +294,16 @@ static void tabview_event_cb(lv_event_t *e)
     uint16_t id = lv_tabview_get_tab_act(tv);
     ESP_LOGI(TAG, "Tab changed to %d", id);
 
-    // Tabs: 0=Clock, 1=Bus, 2=Board, 3=Train, 4=Settings.
+    // Tabs: 0=Clock, 1=Bus, 2=Train, 3=Settings.
     // transport_data's refresh scheduler only knows 0=bus-active, 1=train-active,
-    // else=skip, so map the tabs that consume bus data (Clock/Bus/Board) to 0.
+    // else=skip, so map the tabs that consume bus data (Clock/Bus) to 0.
     int logical_screen;
-    if (id == 3) {
+    if (id == 2) {
         logical_screen = 1; // Train
-    } else if (id == 4) {
+    } else if (id == 3) {
         logical_screen = 2; // Settings - no live data needed
     } else {
-        logical_screen = 0; // Clock, Bus, Board - all show bus countdown data
+        logical_screen = 0; // Clock, Bus - both show bus countdown data
     }
     transport_data_notify_screen_change(logical_screen);
 }
@@ -772,13 +773,9 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
  */
 static void update_board_screen(const struct view_data_bus_countdown *data)
 {
-    if (!board_screen || !data) return;
+    if (!data) return;
 
     lv_port_sem_take();
-
-    if (board_stop_label) {
-        lv_label_set_text(board_stop_label, data->stop_name[0] ? data->stop_name : BUS_STOP_NAME);
-    }
 
     if (board_list) {
         lv_obj_clean(board_list);
@@ -1462,11 +1459,23 @@ static void create_bus_screen(lv_obj_t *parent)
     lv_obj_add_event_cb(bus_back_btn, bus_back_btn_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_set_style_bg_color(bus_back_btn, lv_color_hex(0x444444), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_t *back_label = lv_label_create(bus_back_btn);
-    lv_label_set_text(back_label, "x"); 
+    lv_label_set_text(back_label, "x");
     lv_obj_set_style_text_font(back_label, &arimo_20, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(back_label, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_center(back_label);
-    
+
+    // Board toggle button - left of back - switches to the LED-style departure board view
+    bus_board_toggle_btn = lv_btn_create(bus_view_cont);
+    lv_obj_set_size(bus_board_toggle_btn, 45, 45);
+    lv_obj_align(bus_board_toggle_btn, LV_ALIGN_TOP_RIGHT, -205, 5); // 155 + 45 + 5
+    lv_obj_add_event_cb(bus_board_toggle_btn, bus_board_toggle_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_style_bg_color(bus_board_toggle_btn, lv_color_hex(0x444444), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_t *board_toggle_label = lv_label_create(bus_board_toggle_btn);
+    lv_label_set_text(board_toggle_label, "LED");
+    lv_obj_set_style_text_font(board_toggle_label, &arimo_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(board_toggle_label, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_center(board_toggle_label);
+
     // Departure list - no border, simplified
     // Increase height to allow more items visible without scrolling issue
     bus_list = lv_obj_create(bus_view_cont);
@@ -1480,7 +1489,10 @@ static void create_bus_screen(lv_obj_t *parent)
     lv_obj_set_flex_align(bus_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_add_flag(bus_list, LV_OBJ_FLAG_SCROLLABLE); // Enable scrolling
     lv_obj_set_scrollbar_mode(bus_list, LV_SCROLLBAR_MODE_ACTIVE); // Always show scrollbar when scrolling
-    
+
+    // LED-style board view - same slot as bus_list, toggled via bus_board_toggle_btn
+    create_board_view(bus_view_cont);
+
     // Footer with current time
     bus_time_label = lv_label_create(bus_view_cont);
     lv_obj_set_style_text_color(bus_time_label, lv_color_hex(0x808080), LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -1497,41 +1509,53 @@ static void create_bus_screen(lv_obj_t *parent)
 
 /**
  * @brief Create the LED-style departure board (black background, amber text,
- * modeled after the physical VBZ/ZVV street departure displays). Reuses the
- * same bus countdown data as the Bus screen but renders all directions
- * together, sorted by time, one line per row, filling the whole screen.
+ * modeled after the physical VBZ/ZVV street departure displays), as a
+ * toggle-able alternate view inside the Bus screen (not a separate tab).
+ * It occupies the same slot as bus_list and starts hidden; the stop name
+ * header and time/status footer already on bus_view_cont are shared by
+ * both views. Reuses the same bus countdown data as the normal list but
+ * renders all directions together, sorted by time, one line per row,
+ * filling the whole available area.
  */
-static void create_board_screen(lv_obj_t *parent)
+static void create_board_view(lv_obj_t *parent)
 {
-    board_screen = lv_obj_create(parent);
-    lv_obj_set_size(board_screen, LV_PCT(100), LV_PCT(100));
-    lv_obj_set_style_pad_all(board_screen, 0, 0);
-    lv_obj_set_style_border_width(board_screen, 0, 0);
-    lv_obj_set_style_bg_color(board_screen, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_radius(board_screen, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(board_screen, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_flex_flow(board_screen, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(board_screen, 0, 0);
-
-    // Thin, dimmer header strip with the stop name (matches the "Monbijou"-style variant)
-    board_stop_label = lv_label_create(board_screen);
-    lv_label_set_text(board_stop_label, BUS_STOP_NAME);
-    lv_obj_set_style_text_font(board_stop_label, &arimo_16, LV_PART_MAIN);
-    lv_obj_set_style_text_color(board_stop_label, lv_color_hex(0xAAAAAA), LV_PART_MAIN);
-    lv_obj_set_style_pad_top(board_stop_label, 6, 0);
-    lv_obj_set_style_pad_bottom(board_stop_label, 4, 0);
-    lv_obj_set_style_pad_left(board_stop_label, 8, 0);
-
-    // Departure rows - height auto-computed at update time to fill the rest of the screen
-    board_list = lv_obj_create(board_screen);
-    lv_obj_set_width(board_list, LV_PCT(100));
-    lv_obj_set_flex_grow(board_list, 1);
+    board_list = lv_obj_create(parent);
+    lv_obj_set_size(board_list, LV_PCT(100), LV_PCT(85));
+    lv_obj_align(board_list, LV_ALIGN_TOP_MID, 0, 45);
     lv_obj_set_style_bg_color(board_list, lv_color_hex(0x000000), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(board_list, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
+    lv_obj_set_style_radius(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(board_list, 0, 0);
-    lv_obj_set_style_pad_row(board_list, 2, 0);
+    lv_obj_set_style_pad_row(board_list, 6, 0);
     lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Toggle between the normal Bus list and the LED-style board view.
+ * The blue debug border around the whole app is hidden while the board is
+ * shown, since it clashes with the board's black/amber look.
+ */
+static void bus_board_toggle_btn_cb(lv_event_t *e)
+{
+    bus_board_view_active = !bus_board_view_active;
+
+    if (bus_board_view_active) {
+        lv_obj_add_flag(bus_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(board_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_border_width(tabview, 0, LV_PART_MAIN);
+    } else {
+        lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(bus_list, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_border_width(tabview, 5, LV_PART_MAIN);
+    }
+
+    lv_obj_t *lbl = lv_obj_get_child(bus_board_toggle_btn, 0);
+    if (lbl) {
+        lv_label_set_text(lbl, bus_board_view_active ? "List" : "LED");
+    }
 }
 
 /**
@@ -3157,10 +3181,9 @@ int indicator_view_init(void)
         lv_obj_set_style_border_width(content, 0, LV_PART_MAIN);
     }
     
-    // Create tabs – Clock first, then Bus, Board, Train, Settings
+    // Create tabs – Clock first, then Bus, Train, Settings
     lv_obj_t *clock_tab = lv_tabview_add_tab(tabview, "Clock");
     lv_obj_t *bus_tab = lv_tabview_add_tab(tabview, "Bus");
-    lv_obj_t *board_tab = lv_tabview_add_tab(tabview, "Board");
     lv_obj_t *train_tab = lv_tabview_add_tab(tabview, "Train");
     lv_obj_t *settings_tab = lv_tabview_add_tab(tabview, "Settings");
 
@@ -3170,9 +3193,6 @@ int indicator_view_init(void)
 
     lv_obj_set_style_pad_all(bus_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(bus_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
-
-    lv_obj_set_style_pad_all(board_tab, 0, LV_PART_MAIN);
-    lv_obj_set_style_outline_width(board_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
 
     lv_obj_set_style_pad_all(train_tab, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(train_tab, 0, LV_PART_MAIN | LV_STATE_ANY);
@@ -3201,7 +3221,6 @@ int indicator_view_init(void)
     // Create screens
     create_bus_screen(bus_tab);
     create_bus_details_screen(bus_tab);
-    create_board_screen(board_tab);
     create_train_screen(train_tab);
     // Create details screen as child of train tab, so it overlays the train screen
     create_train_details_screen(train_tab);
