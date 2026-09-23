@@ -235,6 +235,27 @@ struct view_data_station_search {
     bool api_error;
 };
 
+#define MAX_RECENT_COMBOS   3
+#define MAX_RECENT_STATIONS 10
+
+// One remembered From->To pair (most recent first)
+struct recent_combo {
+    char from_name[64];
+    char from_id[16];
+    char to_name[64];
+    char to_id[16];
+};
+
+// Persisted (NVS) history of Journey Planner searches, for quick-pick tiles
+struct view_data_recent_connections {
+    struct recent_combo combos[MAX_RECENT_COMBOS];
+    int combo_count;
+    struct station_search_result recent_from[MAX_RECENT_STATIONS];
+    int recent_from_count;
+    struct station_search_result recent_to[MAX_RECENT_STATIONS];
+    int recent_to_count;
+};
+
 // Settings screen data
 struct view_data_settings {
     struct view_data_wifi_st wifi_status;

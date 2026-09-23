@@ -47,6 +47,13 @@ void connections_data_fetch(void);
  */
 bool connections_data_ready(void);
 
+/**
+ * @brief Get the persisted (NVS-backed) recent From/To history for quick-pick tiles
+ * @param out Output structure, filled with up to MAX_RECENT_COMBOS combos and
+ *            MAX_RECENT_STATIONS recent From/To stations each, most recent first
+ */
+void connections_data_get_recent(struct view_data_recent_connections *out);
+
 #ifdef __cplusplus
 }
 #endif

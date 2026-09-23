@@ -62,6 +62,9 @@ static void create_settings_screen(lv_obj_t *parent);
 static void create_connect_screen(lv_obj_t *parent);
 static void create_connect_details_screen(lv_obj_t *parent);
 static void create_station_search_overlay(lv_obj_t *parent);
+static void update_recent_combo_tiles(void);
+static void populate_recent_station_tiles(bool picking_from);
+static void recent_combo_tile_cb(lv_event_t *e);
 static void update_connect_screen(const struct view_data_connections *data);
 static void update_station_search_results(const struct view_data_station_search *data);
 static void open_station_search(bool picking_from);
@@ -148,6 +151,7 @@ static lv_obj_t *connect_results_cont = NULL;
 static lv_obj_t *connect_from_label = NULL;
 static lv_obj_t *connect_to_label = NULL;
 static lv_obj_t *connect_status_label = NULL;
+static lv_obj_t *connect_recent_cont = NULL;
 static lv_obj_t *connect_results_list = NULL;
 
 // Station search overlay (shared by the From and To pickers)
@@ -1704,6 +1708,49 @@ static void update_connect_from_to_labels(void)
     }
 }
 
+// Cache backing the recent-combo tile buttons' user_data (must outlive the tiles)
+static struct view_data_recent_connections g_recent_cache;
+
+/**
+ * @brief Fill the shared station search results list with recently-used From/To
+ * stations (shown before the user types anything, or after clearing the field).
+ * Reuses g_station_search_cache + station_search_result_item_cb so tapping a
+ * recent tile works exactly like tapping a live search result.
+ */
+static void populate_recent_station_tiles(bool picking_from)
+{
+    if (!station_search_list) return;
+
+    struct view_data_recent_connections recent;
+    connections_data_get_recent(&recent);
+
+    memset(&g_station_search_cache, 0, sizeof(g_station_search_cache));
+    int count = picking_from ? recent.recent_from_count : recent.recent_to_count;
+    const struct station_search_result *src = picking_from ? recent.recent_from : recent.recent_to;
+    for (int i = 0; i < count && i < MAX_STATION_RESULTS; i++) {
+        g_station_search_cache.results[i] = src[i];
+    }
+    g_station_search_cache.count = count;
+
+    lv_obj_clean(station_search_list);
+    if (count == 0) {
+        if (station_search_status) lv_label_set_text(station_search_status, "Type a station name...");
+        return;
+    }
+    if (station_search_status) lv_label_set_text(station_search_status, "Recent:");
+    for (int i = 0; i < count; i++) {
+        lv_obj_t *btn = lv_btn_create(station_search_list);
+        lv_obj_set_size(btn, LV_PCT(100), 45);
+        lv_obj_set_style_bg_color(btn, lv_color_hex(0x333333), 0);
+        lv_obj_add_event_cb(btn, station_search_result_item_cb, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+        lv_obj_t *lbl = lv_label_create(btn);
+        lv_label_set_text(lbl, g_station_search_cache.results[i].name);
+        lv_obj_set_style_text_font(lbl, &arimo_16, 0);
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 5, 0);
+    }
+}
+
 /**
  * @brief Open the shared station search overlay for either the From or To field
  */
@@ -1711,9 +1758,63 @@ static void open_station_search(bool picking_from)
 {
     station_search_picking_from = picking_from;
     if (station_search_ta) lv_textarea_set_text(station_search_ta, "");
-    if (station_search_list) lv_obj_clean(station_search_list);
-    if (station_search_status) lv_label_set_text(station_search_status, "Type a station name...");
+    populate_recent_station_tiles(picking_from);
     if (station_search_cont) lv_obj_clear_flag(station_search_cont, LV_OBJ_FLAG_HIDDEN);
+}
+
+/**
+ * @brief Tap a remembered From->To combo: fill both fields and search immediately
+ */
+static void recent_combo_tile_cb(lv_event_t *e)
+{
+    struct recent_combo *combo = (struct recent_combo *)lv_event_get_user_data(e);
+    if (!combo) return;
+
+    strncpy(g_view_from_name, combo->from_name, sizeof(g_view_from_name) - 1);
+    strncpy(g_view_from_id, combo->from_id, sizeof(g_view_from_id) - 1);
+    strncpy(g_view_to_name, combo->to_name, sizeof(g_view_to_name) - 1);
+    strncpy(g_view_to_id, combo->to_id, sizeof(g_view_to_id) - 1);
+    connections_data_set_from(combo->from_name, combo->from_id);
+    connections_data_set_to(combo->to_name, combo->to_id);
+    update_connect_from_to_labels();
+
+    connect_search_btn_cb(e);
+}
+
+/**
+ * @brief Rebuild the "Recent" combo tiles on the From/To selection screen
+ */
+static void update_recent_combo_tiles(void)
+{
+    if (!connect_recent_cont) return;
+
+    connections_data_get_recent(&g_recent_cache);
+
+    lv_obj_clean(connect_recent_cont);
+    if (g_recent_cache.combo_count == 0) {
+        lv_obj_add_flag(connect_recent_cont, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    lv_obj_clear_flag(connect_recent_cont, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t *label = lv_label_create(connect_recent_cont);
+    lv_label_set_text(label, "Recent:");
+    lv_obj_set_style_text_font(label, &arimo_14, 0);
+    lv_obj_set_style_text_color(label, lv_color_hex(0xAAAAAA), 0);
+
+    for (int i = 0; i < g_recent_cache.combo_count; i++) {
+        lv_obj_t *tile = lv_btn_create(connect_recent_cont);
+        lv_obj_set_size(tile, LV_PCT(100), 34);
+        lv_obj_set_style_bg_color(tile, lv_color_hex(0x333333), 0);
+        lv_obj_add_event_cb(tile, recent_combo_tile_cb, LV_EVENT_CLICKED, &g_recent_cache.combos[i]);
+
+        lv_obj_t *lbl = lv_label_create(tile);
+        lv_label_set_text_fmt(lbl, "%s -> %s", g_recent_cache.combos[i].from_name, g_recent_cache.combos[i].to_name);
+        lv_obj_set_style_text_font(lbl, &arimo_14, 0);
+        lv_label_set_long_mode(lbl, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(lbl, LV_PCT(95));
+        lv_obj_align(lbl, LV_ALIGN_LEFT_MID, 5, 0);
+    }
 }
 
 static void connect_from_btn_cb(lv_event_t *e)
@@ -1776,6 +1877,7 @@ static void connect_back_btn_cb(lv_event_t *e)
     lv_obj_clear_flag(connect_selection_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(connect_loading_cont, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(connect_results_cont, LV_OBJ_FLAG_HIDDEN);
+    update_recent_combo_tiles();
 }
 
 static void station_search_debounce_cb(lv_timer_t *t)
@@ -1783,6 +1885,10 @@ static void station_search_debounce_cb(lv_timer_t *t)
     station_search_debounce_timer = NULL;
     if (!station_search_ta) return;
     const char *text = lv_textarea_get_text(station_search_ta);
+    if (text[0] == '\0') {
+        populate_recent_station_tiles(station_search_picking_from);
+        return;
+    }
     if (strlen(text) < 2) {
         if (station_search_list) lv_obj_clean(station_search_list);
         if (station_search_status) lv_label_set_text(station_search_status, "Type at least 2 letters...");
@@ -2141,6 +2247,16 @@ static void create_connect_screen(lv_obj_t *parent)
     lv_label_set_long_mode(connect_status_label, LV_LABEL_LONG_WRAP);
     lv_obj_align(connect_status_label, LV_ALIGN_TOP_MID, 0, 295);
 
+    connect_recent_cont = lv_obj_create(connect_selection_cont);
+    lv_obj_set_size(connect_recent_cont, LV_PCT(85), 155);
+    lv_obj_align(connect_recent_cont, LV_ALIGN_TOP_MID, 0, 315);
+    lv_obj_set_style_bg_opa(connect_recent_cont, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(connect_recent_cont, 0, 0);
+    lv_obj_set_style_pad_all(connect_recent_cont, 0, 0);
+    lv_obj_set_flex_flow(connect_recent_cont, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_gap(connect_recent_cont, 4, 0);
+    lv_obj_add_flag(connect_recent_cont, LV_OBJ_FLAG_HIDDEN); // shown once there's history
+
     // --- Loading state ---
     connect_loading_cont = lv_obj_create(connect_screen);
     lv_obj_set_size(connect_loading_cont, LV_PCT(100), LV_PCT(100));
@@ -2185,6 +2301,8 @@ static void create_connect_screen(lv_obj_t *parent)
     // Overlays (children of connect_screen so they cover the whole tab)
     create_station_search_overlay(connect_screen);
     create_connect_details_screen(connect_screen);
+
+    update_recent_combo_tiles(); // show any history persisted from a previous session
 }
 
 /**

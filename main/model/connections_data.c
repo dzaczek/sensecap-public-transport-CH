@@ -1,5 +1,6 @@
 #include "connections_data.h"
 #include "network_manager.h"
+#include "indicator_storage.h"
 #include "esp_log.h"
 #include "esp_event.h"
 #include "cJSON.h"
@@ -14,6 +15,7 @@ static const char *TAG = "connections";
 
 // API endpoint base URL (same host as the stationboard endpoints)
 #define CONNECTIONS_API_BASE "http://transport.opendata.ch/v1"
+#define RECENT_CONNECTIONS_STORAGE "recent_conn"
 
 // From/To station selection (mutable, set via connections_data_set_from/to)
 static char g_from_name[64] = "";
@@ -23,6 +25,9 @@ static char g_to_id[16] = "";
 
 // Result storage
 static struct view_data_connections g_connections_data = {0};
+
+// Recent From/To history for quick-pick tiles, loaded from / saved to NVS
+static struct view_data_recent_connections g_recent = {0};
 
 // Re-entrancy guards
 static bool g_connections_fetch_in_progress = false;
@@ -504,6 +509,70 @@ static void fetch_connections_task(void *arg)
     vTaskDelete(NULL);
 }
 
+/**
+ * @brief Move (name,id) to the front of a station list, deduping by id, capped at max
+ */
+static void remember_station(struct station_search_result *list, int *count, int max,
+                              const char *name, const char *id)
+{
+    int existing = -1;
+    for (int i = 0; i < *count; i++) {
+        if (strcmp(list[i].id, id) == 0) {
+            existing = i;
+            break;
+        }
+    }
+
+    int shift_end = (existing >= 0) ? existing : (*count < max ? *count : max - 1);
+    for (int i = shift_end; i > 0; i--) {
+        list[i] = list[i - 1];
+    }
+
+    strncpy(list[0].name, name, sizeof(list[0].name) - 1);
+    list[0].name[sizeof(list[0].name) - 1] = '\0';
+    strncpy(list[0].id, id, sizeof(list[0].id) - 1);
+    list[0].id[sizeof(list[0].id) - 1] = '\0';
+
+    if (existing < 0 && *count < max) (*count)++;
+}
+
+/**
+ * @brief Record the current from/to as the most recent search (combo + each station), then persist
+ */
+static void remember_current_search(void)
+{
+    int existing = -1;
+    for (int i = 0; i < g_recent.combo_count; i++) {
+        if (strcmp(g_recent.combos[i].from_id, g_from_id) == 0 &&
+            strcmp(g_recent.combos[i].to_id, g_to_id) == 0) {
+            existing = i;
+            break;
+        }
+    }
+    int shift_end = (existing >= 0) ? existing : (g_recent.combo_count < MAX_RECENT_COMBOS ? g_recent.combo_count : MAX_RECENT_COMBOS - 1);
+    for (int i = shift_end; i > 0; i--) {
+        g_recent.combos[i] = g_recent.combos[i - 1];
+    }
+    strncpy(g_recent.combos[0].from_name, g_from_name, sizeof(g_recent.combos[0].from_name) - 1);
+    strncpy(g_recent.combos[0].from_id, g_from_id, sizeof(g_recent.combos[0].from_id) - 1);
+    strncpy(g_recent.combos[0].to_name, g_to_name, sizeof(g_recent.combos[0].to_name) - 1);
+    strncpy(g_recent.combos[0].to_id, g_to_id, sizeof(g_recent.combos[0].to_id) - 1);
+    if (existing < 0 && g_recent.combo_count < MAX_RECENT_COMBOS) g_recent.combo_count++;
+
+    remember_station(g_recent.recent_from, &g_recent.recent_from_count, MAX_RECENT_STATIONS, g_from_name, g_from_id);
+    remember_station(g_recent.recent_to, &g_recent.recent_to_count, MAX_RECENT_STATIONS, g_to_name, g_to_id);
+
+    esp_err_t err = indicator_storage_write(RECENT_CONNECTIONS_STORAGE, &g_recent, sizeof(g_recent));
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to persist recent connections: %s", esp_err_to_name(err));
+    }
+}
+
+void connections_data_get_recent(struct view_data_recent_connections *out)
+{
+    if (out) *out = g_recent;
+}
+
 void connections_data_fetch(void)
 {
     if (!connections_data_ready()) {
@@ -515,6 +584,8 @@ void connections_data_fetch(void)
         ESP_LOGW(TAG, "Connections fetch already in progress, skipping");
         return;
     }
+
+    remember_current_search();
 
     g_connections_fetch_in_progress = true;
     if (xTaskCreate(fetch_connections_task, "fetch_conn", 8192, NULL, 5, NULL) != pdPASS) {
@@ -532,5 +603,17 @@ esp_err_t connections_data_init(void)
 {
     ESP_LOGI(TAG, "Initializing connections data module");
     memset(&g_connections_data, 0, sizeof(g_connections_data));
+
+    memset(&g_recent, 0, sizeof(g_recent));
+    size_t len = sizeof(g_recent);
+    esp_err_t err = indicator_storage_read(RECENT_CONNECTIONS_STORAGE, &g_recent, &len);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "No saved recent connections yet (%s)", esp_err_to_name(err));
+        memset(&g_recent, 0, sizeof(g_recent));
+    } else {
+        ESP_LOGI(TAG, "Loaded %d recent combo(s), %d recent From, %d recent To",
+                 g_recent.combo_count, g_recent.recent_from_count, g_recent.recent_to_count);
+    }
+
     return ESP_OK;
 }
