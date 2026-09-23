@@ -762,6 +762,7 @@ static void update_bus_screen(const struct view_data_bus_countdown *data)
  * physical dot-matrix board's warm amber, see PR discussion for reference photos). */
 #define BOARD_LED_AMBER   0xFFB500
 #define BOARD_ROW_HEIGHT  22   /* matches led_matrix_20's line_height - no extra slack inside the row */
+#define BOARD_ROW_GAP     2    /* must match lv_obj_set_style_pad_row(board_list, ...) below */
 #define BOARD_RIGHT_COL_W 40   /* reserved space on the right for the minutes/icon */
 
 /**
@@ -830,8 +831,17 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
 
         lv_obj_update_layout(board_list);
         lv_coord_t avail_h = lv_obj_get_content_height(board_list);
-        int rows_capacity = avail_h / BOARD_ROW_HEIGHT;
+        lv_coord_t row_w = lv_obj_get_content_width(board_list);
+        /* Row gap (BOARD_ROW_GAP) must be counted per row, or we overestimate how many
+         * rows fit and the last one gets pushed out past the board into the footer. */
+        int rows_capacity = (avail_h + BOARD_ROW_GAP) / (BOARD_ROW_HEIGHT + BOARD_ROW_GAP);
         if (rows_capacity < 1) rows_capacity = 1;
+
+        /* Plain pixel width for the text column - NOT LV_PCT() arithmetic: subtracting a
+         * pixel count from an LV_PCT() value corrupts its bit-packed encoding instead of
+         * shrinking it, which is what made the text column size unpredictable before. */
+        lv_coord_t text_max_w = row_w - BOARD_RIGHT_COL_W - 16;
+        if (text_max_w < 40) text_max_w = 40;
 
         int shown = 0;
         for (int i = 0; i < data->count && i < MAX_DEPARTURES && shown < rows_capacity; i++) {
@@ -849,8 +859,7 @@ static void update_board_screen(const struct view_data_bus_countdown *data)
             // Line number + destination run together as one line, like the real board
             char line_dest[96];
             snprintf(line_dest, sizeof(line_dest), "%s %s", data->departures[i].line, data->departures[i].destination);
-            create_board_label(row, line_dest, &led_matrix_20,
-                                LV_PCT(100) - BOARD_RIGHT_COL_W - 8, LV_ALIGN_LEFT_MID, 8, 0);
+            create_board_label(row, line_dest, &led_matrix_20, text_max_w, LV_ALIGN_LEFT_MID, 8, 0);
 
             // Minutes, right column - replaced by a bus icon once at the stop
             if (data->departures[i].minutes_until <= 0) {
@@ -1565,7 +1574,7 @@ static void create_board_view(lv_obj_t *parent)
     lv_obj_set_style_border_width(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_radius(board_list, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(board_list, 0, 0);
-    lv_obj_set_style_pad_row(board_list, 2, 0);
+    lv_obj_set_style_pad_row(board_list, BOARD_ROW_GAP, 0);
     lv_obj_set_flex_flow(board_list, LV_FLEX_FLOW_COLUMN);
     lv_obj_clear_flag(board_list, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(board_list, LV_OBJ_FLAG_HIDDEN);
