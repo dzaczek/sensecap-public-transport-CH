@@ -22,6 +22,9 @@ enum start_screen {
 #define MAX_BUS_LINES 10
 #define MAX_TRAIN_LINES 20
 #define MAX_DIRECTIONS 5  // Maximum number of distinct directions to track
+#define MAX_CONNECTIONS 6          // Max journeys shown for a from/to search
+#define MAX_CONNECTION_SECTIONS 6  // Max legs (transfers) per journey
+#define MAX_STATION_RESULTS 8      // Max matches shown while searching for a station
 
 // WiFi structures
 struct view_data_wifi_st {
@@ -88,7 +91,24 @@ struct view_data_display {
     int   brightness; // 0~100
     bool  sleep_mode_en;
     int   sleep_mode_time_min;  // 0 = always on, 1, 5, 10, 30, 60 minutes
+
+    // Scheduled on/off (e.g. "on weekdays 08:00-16:00"), independent of sleep_mode above
+    bool    schedule_en;
+    uint8_t schedule_days;      // bit0=Monday .. bit6=Sunday
+    int     schedule_on_hour;   // 0-23
+    int     schedule_on_min;    // 0-59
+    int     schedule_off_hour;  // 0-23
+    int     schedule_off_min;   // 0-59
 };
+
+#define SCHEDULE_DAY_MON (1 << 0)
+#define SCHEDULE_DAY_TUE (1 << 1)
+#define SCHEDULE_DAY_WED (1 << 2)
+#define SCHEDULE_DAY_THU (1 << 3)
+#define SCHEDULE_DAY_FRI (1 << 4)
+#define SCHEDULE_DAY_SAT (1 << 5)
+#define SCHEDULE_DAY_SUN (1 << 6)
+#define SCHEDULE_DAYS_WEEKDAYS (SCHEDULE_DAY_MON | SCHEDULE_DAY_TUE | SCHEDULE_DAY_WED | SCHEDULE_DAY_THU | SCHEDULE_DAY_FRI)
 
 // Time configuration
 struct view_data_time_cfg {
@@ -186,6 +206,73 @@ struct view_data_train_station {
     char error_msg[64];
 };
 
+// One leg of a connection (e.g. "IC 8" from Zurich HB to Bern)
+struct connection_section {
+    char line[16];              // e.g. "IC8", "S12", "T11"
+    char from_name[64];
+    char to_name[64];
+    char departure_time[6];     // "HH:MM"
+    char arrival_time[6];       // "HH:MM"
+    char platform[16];
+};
+
+// One journey option between the searched from/to stations
+struct connection_view {
+    char departure_time[6];     // "HH:MM"
+    char arrival_time[6];       // "HH:MM"
+    char duration[8];           // "HH:MM"
+    int  transfers;
+    int  departure_delay;       // minutes, 0 if on time
+    struct connection_section sections[MAX_CONNECTION_SECTIONS];
+    int  section_count;
+    bool valid;
+};
+
+// Screen: Journey planner (Connect tab) results
+struct view_data_connections {
+    char from_name[64];
+    char to_name[64];
+    struct connection_view connections[MAX_CONNECTIONS];
+    int  count;
+    time_t update_time;
+    bool api_error;
+    char error_msg[64];
+};
+
+// One match while searching for a station name (From/To picker)
+struct station_search_result {
+    char name[64];
+    char id[16];
+};
+
+// Screen: From/To station search overlay results
+struct view_data_station_search {
+    struct station_search_result results[MAX_STATION_RESULTS];
+    int count;
+    bool api_error;
+};
+
+#define MAX_RECENT_COMBOS   3
+#define MAX_RECENT_STATIONS 10
+
+// One remembered From->To pair (most recent first)
+struct recent_combo {
+    char from_name[64];
+    char from_id[16];
+    char to_name[64];
+    char to_id[16];
+};
+
+// Persisted (NVS) history of Journey Planner searches, for quick-pick tiles
+struct view_data_recent_connections {
+    struct recent_combo combos[MAX_RECENT_COMBOS];
+    int combo_count;
+    struct station_search_result recent_from[MAX_RECENT_STATIONS];
+    int recent_from_count;
+    struct station_search_result recent_to[MAX_RECENT_STATIONS];
+    int recent_to_count;
+};
+
 // Settings screen data
 struct view_data_settings {
     struct view_data_wifi_st wifi_status;
@@ -258,7 +345,12 @@ enum {
     VIEW_EVENT_BUS_DETAILS_REQ,         // char* journey_name - request details
     VIEW_EVENT_SETTINGS_UPDATE,         // struct view_data_settings
     VIEW_EVENT_SYSTEM_INFO_UPDATE,      // struct view_data_system_info - system diagnostics info
-    
+
+    VIEW_EVENT_STATION_SEARCH_REQ,       // char* query - search stations by name (From/To picker)
+    VIEW_EVENT_STATION_SEARCH_RESULTS,   // struct view_data_station_search
+    VIEW_EVENT_CONNECTIONS_REQ,          // NULL - search connections for the currently set from/to
+    VIEW_EVENT_CONNECTIONS_UPDATE,       // struct view_data_connections
+
     VIEW_EVENT_SHUTDOWN,
     VIEW_EVENT_FACTORY_RESET,
     VIEW_EVENT_SCREEN_CTRL,

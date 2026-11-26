@@ -4,6 +4,7 @@
 #include "driver/ledc.h"
 #include "esp_timer.h"
 #include "nvs.h"
+#include <time.h>
 
 #define DISPLAY_CFG_STORAGE  "display"
 
@@ -194,6 +195,12 @@ if (ret == ESP_ERR_NVS_NOT_FOUND) {
 cfg.brightness = 80;
 cfg.sleep_mode_en = false;
 cfg.sleep_mode_time_min = 0;
+cfg.schedule_en = true;
+cfg.schedule_days = SCHEDULE_DAYS_WEEKDAYS;
+cfg.schedule_on_hour = 8;
+cfg.schedule_on_min = 0;
+cfg.schedule_off_hour = 16;
+cfg.schedule_off_min = 0;
 }
 
 // Store in manager (short critical section)
@@ -203,11 +210,68 @@ xSemaphoreGive(g_mgr.mutex);
 }
 
 /**
+* @brief Bit for struct tm's tm_wday (0=Sunday..6=Saturday) in our Monday-first schedule_days mask
+*/
+static uint8_t __wday_to_schedule_bit(int tm_wday)
+{
+    int mon_first = (tm_wday == 0) ? 6 : tm_wday - 1; // Sunday(0)->6, Monday(1)->0, ... Saturday(6)->5
+    return (uint8_t)(1 << mon_first);
+}
+
+/**
+* @brief Check the on/off schedule against the current time and flip the display if needed.
+* Runs once a minute, driven by VIEW_EVENT_TIME (posted by indicator_time.c on minute change).
+*/
+static void __schedule_check(void)
+{
+    xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);
+    struct view_data_display cfg = g_mgr.cfg;
+    bool currently_on = g_mgr.display_on;
+    xSemaphoreGive(g_mgr.mutex);
+
+    if (!cfg.schedule_en) return;
+
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+
+    if (!(cfg.schedule_days & __wday_to_schedule_bit(timeinfo.tm_wday))) {
+        return; // not a scheduled day - leave display as-is (manual control still applies)
+    }
+
+    int now_min = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    int on_min = cfg.schedule_on_hour * 60 + cfg.schedule_on_min;
+    int off_min = cfg.schedule_off_hour * 60 + cfg.schedule_off_min;
+
+    bool should_be_on = (on_min <= off_min) ? (now_min >= on_min && now_min < off_min)
+                                             : (now_min >= on_min || now_min < off_min); // wraps past midnight
+
+    if (should_be_on && !currently_on) {
+        ESP_LOGI(TAG, "Schedule: turning display ON");
+        indicator_display_on();
+        bool screen_state = true;
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_CTRL,
+                        &screen_state, sizeof(screen_state), portMAX_DELAY);
+    } else if (!should_be_on && currently_on) {
+        ESP_LOGI(TAG, "Schedule: turning display OFF");
+        indicator_display_off();
+        bool screen_state = false;
+        esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_CTRL,
+                        &screen_state, sizeof(screen_state), portMAX_DELAY);
+    }
+}
+
+/**
 * @brief Event handler for view events
 */
 static void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data)
 {
 switch (id) {
+case VIEW_EVENT_TIME: {
+    __schedule_check();
+    break;
+}
 case VIEW_EVENT_BRIGHTNESS_UPDATE: {
     // Live preview - update brightness only, don't save
     int *p_brightness = (int *)event_data;
@@ -287,8 +351,12 @@ ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
                                                     VIEW_EVENT_BASE, VIEW_EVENT_BRIGHTNESS_UPDATE, 
                                                     __view_event_handler, NULL, NULL));
 
-ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle, 
-                                                    VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG_APPLY, 
+ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                    VIEW_EVENT_BASE, VIEW_EVENT_DISPLAY_CFG_APPLY,
+                                                    __view_event_handler, NULL, NULL));
+
+ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
+                                                    VIEW_EVENT_BASE, VIEW_EVENT_TIME,
                                                     __view_event_handler, NULL, NULL));
 
 xSemaphoreTake(g_mgr.mutex, portMAX_DELAY);

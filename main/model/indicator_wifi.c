@@ -572,8 +572,13 @@ static void __ping_start(void)
         .on_ping_timeout = NULL,
         .on_ping_end = __ping_end
     };
-    esp_ping_handle_t ping;
-    esp_ping_new_session(&config, &cbs, &ping);
+    esp_ping_handle_t ping = NULL;
+    esp_err_t err = esp_ping_new_session(&config, &cbs, &ping);
+    if (err != ESP_OK || ping == NULL) {
+        ESP_LOGE(TAG, "esp_ping_new_session failed: %s", esp_err_to_name(err));
+        __g_ping_done = true; // don't leave the network-check loop waiting on a ping that never completes
+        return;
+    }
     __g_ping_done = false;
     esp_ping_start(ping);
 }
